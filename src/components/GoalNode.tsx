@@ -1,6 +1,6 @@
 /**
- * GoalNode.tsx  –  Circular Goal Visualisation
- * -----------------------------------------------
+ * GoalNode.tsx  –  Circular Goal Visualisation (2× size)
+ * --------------------------------------------------------
  * Renders a single goal as an SVG circle that "fills up" radially like
  * water in a round flask.  The fill percentage is derived from
  * `currentAmount / targetAmount`.
@@ -8,6 +8,12 @@
  * The radial fill uses an SVG `<circle>` with `stroke-dasharray` &
  * `stroke-dashoffset` animated via Framer Motion, giving a smooth
  * clockwise fill effect starting from the bottom (6-o'clock position).
+ *
+ * Size notes (v2):
+ *  • Circle diameter doubled from 140 → 280 px.
+ *  • Goal title text doubled from text-[10px] → text-[20px].
+ *  • Target dollar amount doubled from text-base → text-[2rem].
+ *  • Percentage and current-amount labels scaled 1.3× from 10px → 13px.
  *
  * Props:
  *  • goal       – The `Goal` object to visualise.
@@ -21,18 +27,18 @@ import React, { useMemo } from "react";
 import { motion } from "framer-motion";
 import { Goal } from "@/lib/types";
 
-/* ── Geometry constants ────────────────────────────────────────── */
+/* ── Geometry constants (2× original) ─────────────────────────── */
 
 /**
  * SVG viewBox dimensions and circle metrics.
- * Radius = 52 yields a circumference of ~326.73, used to calculate
- * dash offsets for the fill animation.
+ * Original: RADIUS=52, SVG_SIZE=140, STROKE_WIDTH=5
+ * Doubled:  RADIUS=104, SVG_SIZE=280, STROKE_WIDTH=8
  */
-const RADIUS = 52;
+const RADIUS = 104;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-const SVG_SIZE = 140;
+const SVG_SIZE = 280;
 const CENTER = SVG_SIZE / 2;
-const STROKE_WIDTH = 5;
+const STROKE_WIDTH = 8;
 
 /* ── Component ─────────────────────────────────────────────────── */
 
@@ -62,7 +68,10 @@ export default function GoalNode({ goal, index, highlight }: GoalNodeProps) {
   /** Is this goal fully funded? */
   const isComplete = percentage >= 1;
 
-  /** Format a dollar amount as a compact string, e.g. "$10K", "$2.5K". */
+  /**
+   * Format a dollar amount as a compact string, e.g. "$10K", "$2.5K".
+   * Used for the large target-amount label inside the circle.
+   */
   const formatAmount = (n: number): string => {
     if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `$${(n / 1_000).toFixed(n % 1000 === 0 ? 0 : 1)}K`;
@@ -76,7 +85,7 @@ export default function GoalNode({ goal, index, highlight }: GoalNodeProps) {
       transition={{ delay: index * 0.12, type: "spring", stiffness: 160 }}
       className="flex flex-col items-center relative"
     >
-      {/* ── SVG ring ────────────────────────────────────────────── */}
+      {/* ── SVG ring (280 × 280) ────────────────────────────────── */}
       <div
         className={`relative ${highlight ? "animate-neon-pulse" : ""} ${
           isComplete ? "glow-purple-strong" : ""
@@ -130,15 +139,19 @@ export default function GoalNode({ goal, index, highlight }: GoalNodeProps) {
 
         {/* ── Inner content (amount + title) rendered on top of SVG ── */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-base font-semibold text-foreground leading-tight">
+          {/* Target amount — 2× original (was text-base / 16px, now 2rem / 32px) */}
+          <span className="text-[2rem] font-semibold text-foreground leading-tight">
             {formatAmount(goal.targetAmount)}
           </span>
-          <span className="text-[10px] text-muted mt-0.5 max-w-[80px] truncate text-center">
+
+          {/* Goal title — 2× original (was 10px, now 20px) */}
+          <span className="text-[20px] text-muted mt-1 max-w-[180px] truncate text-center">
             {goal.title}
           </span>
-          {/* Show progress percentage beneath the title. */}
+
+          {/* Progress percentage — 1.3× original (was 10px, now 13px) */}
           <span
-            className={`text-[10px] mt-0.5 font-mono ${
+            className={`text-[13px] mt-1 font-mono ${
               isComplete ? "text-accent" : "text-accent-soft"
             }`}
           >
