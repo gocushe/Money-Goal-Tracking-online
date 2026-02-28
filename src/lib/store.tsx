@@ -1,22 +1,8 @@
 /**
- * store.tsx  –  Global State Provider (React Context + Redis Sync)
+ * store.tsx  –  Multi-Account State Providers
  * ------------------------------------------------------------------
- * Manages the goal list, fund allocation logic, and CRUD operations.
- *
- * Architecture notes:
- *  • On mount the provider tries to fetch goals from the `/api/goals`
- *    endpoint (backed by Redis).  If the API is unavailable (local dev
- *    without `REDIS_URL`, or network error) it falls back to
- *    localStorage so the app always works.
- *  • Every mutation (add / remove / reorder / addFunds) optimistically
- *    updates local state, persists to localStorage, **and** fires a
- *    background PUT to `/api/goals` to keep Redis in sync.
- *  • `addFunds()` distributes money bottom-up (lowest orderIndex first),
- *    spilling overflow into the next incomplete goal – exactly like water
- *    rising through a pipe.
- *
- * Usage:
- *   Wrap your app in `<GoalsProvider>` then call `useGoals()` in any child.
+ * Provides React Context providers for Goals, Spending, and Bills.
+ * Each account (letter + code) has isolated storage.
  */
 
 "use client";
@@ -30,203 +16,148 @@ import React, {
   useEffect,
   useRef,
 } from "react";
-import { Goal, GoalsContextValue } from "@/lib/types";
+import {
+  Goal,
+  SideGoal,
+  GoalDeposit,
+  GoalsContextValue,
+  SpendingEntry,
+  SpendingContextValue,
+  Bill,
+  BillPayment,
+  BillsContextValue,
+  UnallocatedDeposit,
+  UnallocatedFundsContextValue,
+  LetterRoute,
+  AuthSession,
+} from "@/lib/types";
 
-/* ── localStorage key ──────────────────────────────────────────── */
-const STORAGE_KEY = "money-goals-data";
+/* ── Storage helpers ───────────────────────────────────────────── */
 
-/* ── Seed data (shown on first visit when no data exists anywhere) ── */
-const DEFAULT_GOALS: Goal[] = [
-  {
-    id: "seed-1",
-    title: "Emergency Fund",
-    targetAmount: 5000,
-    currentAmount: 1200,
-    orderIndex: 0,
-  },
-  {
-    id: "seed-2",
-    title: "Vacation",
-    targetAmount: 3000,
-    currentAmount: 0,
-    orderIndex: 1,
-  },
-  {
-    id: "seed-3",
-    title: "New Laptop",
-    targetAmount: 2000,
-    currentAmount: 0,
-    orderIndex: 2,
-  },
+const ROUTES_KEY = "money-goals-routes";
+
+/** Default routes: Admin under A-1598. */
+const DEFAULT_ROUTES: LetterRoute[] = [
+  { letter: "A", codes: [{ code: "1598", label: "Admin" }] },
 ];
 
-/* ── Context (undefined until provider mounts) ─────────────────── */
-const GoalsContext = createContext<GoalsContextValue | undefined>(undefined);
+export function loadRoutes(): LetterRoute[] {
+  if (typeof window === "undefined") return DEFAULT_ROUTES;
+  try {
+    const raw = localStorage.getItem(ROUTES_KEY);
+    return raw ? JSON.parse(raw) : DEFAULT_ROUTES;
+  } catch {
+    return DEFAULT_ROUTES;
+  }
+}
 
-/* ── Helper: generate a simple UUID v4 ─────────────────────────── */
+export function saveRoutes(routes: LetterRoute[]) {
+  localStorage.setItem(ROUTES_KEY, JSON.stringify(routes));
+}
+
+/** Check if a letter+code combination is valid. */
+export function validateLogin(letter: string, code: string): { valid: boolean; label: string } {
+  const routes = loadRoutes();
+  const route = routes.find((r) => r.letter === letter);
+  if (!route) return { valid: false, label: "" };
+  const match = route.codes.find((c) => c.code === code);
+  if (!match) return { valid: false, label: "" };
+  return { valid: true, label: match.label };
+}
+
+function storageKey(prefix: string, session: AuthSession) {
+  return `${prefix}-${session.letter}-${session.code}`;
+}
+
+/* ── UUID helper ───────────────────────────────────────────────── */
 function uuid(): string {
   return crypto.randomUUID();
 }
 
-/* ───────────────────────────────────────────────────────────────
- *  Redis API helpers — thin wrappers around fetch() calls to
- *  the Next.js API route at /api/goals.
- * ─────────────────────────────────────────────────────────────── */
+/* ── Default goals seed (all zeroed out) ───────────────────────── */
+const DEFAULT_GOALS: Goal[] = [
+  { id: "seed-1", title: "Emergency Fund", targetAmount: 5000, currentAmount: 0, orderIndex: 0 },
+  { id: "seed-2", title: "Vacation", targetAmount: 3000, currentAmount: 0, orderIndex: 1 },
+  { id: "seed-3", title: "New Laptop", targetAmount: 2000, currentAmount: 0, orderIndex: 2 },
+];
 
-/**
- * Fetch goals from the Redis-backed API.
- * Returns `null` if the API is unreachable or Redis is not configured,
- * signalling the caller to fall back to localStorage.
- */
-async function fetchGoalsFromAPI(): Promise<Goal[] | null> {
-  try {
-    const res = await fetch("/api/goals", { cache: "no-store" });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.goals ?? null;
-  } catch {
-    /* Network error or API not running — fall back silently. */
-    return null;
-  }
-}
+/* ═══════════════════════════════════════════════════════════════════
+ *  GOALS PROVIDER
+ * ═══════════════════════════════════════════════════════════════════ */
 
-/**
- * Persist the full goals array to Redis via a PUT request.
- * Failures are logged but never block the UI.
- */
-async function saveGoalsToAPI(goals: Goal[]): Promise<void> {
-  try {
-    await fetch("/api/goals", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goals }),
-    });
-  } catch {
-    /* Silently swallow — localStorage serves as the fallback. */
-    console.warn("[store] Failed to sync goals to Redis API.");
-  }
-}
+const GoalsContext = createContext<GoalsContextValue | undefined>(undefined);
 
-/* ── Provider component ────────────────────────────────────────── */
-/**
- * `GoalsProvider` wraps the component tree and exposes goal state + actions
- * through React Context.
- *
- * Persistence strategy (ordered by priority):
- *  1. Redis (via `/api/goals`) — authoritative when available.
- *  2. localStorage — immediate fallback, always kept in sync.
- */
-export function GoalsProvider({ children }: { children: React.ReactNode }) {
-  /**
-   * Initialise from localStorage synchronously so the first paint
-   * is never empty.  The useEffect below will overwrite with Redis
-   * data if available.
-   */
+export function GoalsProvider({
+  session,
+  children,
+}: {
+  session: AuthSession;
+  children: React.ReactNode;
+}) {
+  const key = storageKey("money-goals-data", session);
+  const depositsKey = storageKey("money-goals-deposits", session);
+
   const [goals, setGoalsRaw] = useState<Goal[]>(() => {
     if (typeof window === "undefined") return DEFAULT_GOALS;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(key);
       return stored ? (JSON.parse(stored) as Goal[]) : DEFAULT_GOALS;
     } catch {
       return DEFAULT_GOALS;
     }
   });
 
-  /** Track whether the initial Redis fetch has completed. */
-  const initialFetchDone = useRef(false);
+  const [goalDeposits, setGoalDeposits] = useState<GoalDeposit[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(depositsKey);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
 
-  /**
-   * On mount, attempt to hydrate from Redis.
-   * If Redis returns data, use it as the source of truth and also
-   * update localStorage.  Otherwise keep whatever localStorage had.
-   */
-  useEffect(() => {
-    if (initialFetchDone.current) return;
-    initialFetchDone.current = true;
-
-    (async () => {
-      const remote = await fetchGoalsFromAPI();
-      if (remote && remote.length > 0) {
-        setGoalsRaw(remote);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
-      } else if (remote && remote.length === 0) {
-        /* Redis is connected but empty — seed it with defaults or
-           whatever is currently in localStorage. */
-        const current =
-          goals.length > 0 ? goals : DEFAULT_GOALS;
-        await saveGoalsToAPI(current);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /**
-   * Persist to both localStorage and Redis whenever goals change.
-   * We skip the very first render (before Redis hydration) to avoid
-   * overwriting remote data with stale localStorage data.
-   */
   const isFirstRender = useRef(true);
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(goals));
-    saveGoalsToAPI(goals);
-  }, [goals]);
+    localStorage.setItem(key, JSON.stringify(goals));
+  }, [goals, key]);
 
-  /**
-   * Replace the full goal array.
-   * Used after drag-and-drop reorder or bulk operations.
-   */
-  const setGoals = useCallback((next: Goal[]) => {
-    setGoalsRaw(next);
-  }, []);
+  useEffect(() => {
+    localStorage.setItem(depositsKey, JSON.stringify(goalDeposits));
+  }, [goalDeposits, depositsKey]);
 
-  /**
-   * Append a new goal at the top of the visual chain.
-   * Its `orderIndex` is one above the current maximum.
-   */
+  const setGoals = useCallback((next: Goal[]) => setGoalsRaw(next), []);
+
   const addGoal = useCallback(
     (title: string, targetAmount: number) => {
-      const maxOrder = goals.reduce(
-        (max, g) => Math.max(max, g.orderIndex),
-        -1
-      );
+      const maxOrder = goals.reduce((max, g) => Math.max(max, g.orderIndex), -1);
       const newGoal: Goal = {
         id: uuid(),
         title,
         targetAmount,
         currentAmount: 0,
         orderIndex: maxOrder + 1,
+        sideGoals: [],
       };
       setGoalsRaw((prev) => [...prev, newGoal]);
     },
     [goals]
   );
 
-  /**
-   * Remove a goal by id and re-index the remaining goals so
-   * orderIndex values stay contiguous.
-   */
   const removeGoal = useCallback((id: string) => {
     setGoalsRaw((prev) => {
       const filtered = prev.filter((g) => g.id !== id);
-      /* Re-index so order stays 0…n-1 */
       return filtered
         .sort((a, b) => a.orderIndex - b.orderIndex)
         .map((g, i) => ({ ...g, orderIndex: i }));
     });
   }, []);
 
-  /**
-   * Distribute `amount` across goals from lowest to highest orderIndex.
-   * Each goal can only accept up to `targetAmount - currentAmount`.
-   * Overflow spills into the next goal — the "water flow" mechanic.
-   *
-   * @returns An allocation map `{ [goalId]: dollarsAdded }` used by
-   *          the animation layer to show money flowing upward.
-   */
+  /** Distribute funds linearly through the goal chain (bottom-up). */
   const addFunds = useCallback(
     (amount: number): Record<string, number> => {
       const sorted = [...goals].sort((a, b) => a.orderIndex - b.orderIndex);
@@ -243,39 +174,386 @@ export function GoalsProvider({ children }: { children: React.ReactNode }) {
       });
 
       setGoalsRaw(updatedGoals);
+
+      // Record deposits for pie chart tracking
+      const newDeposits: GoalDeposit[] = Object.entries(allocation).map(
+        ([goalId, amt]) => {
+          const g = sorted.find((x) => x.id === goalId);
+          return {
+            id: uuid(),
+            goalId,
+            goalTitle: g?.title || "Unknown",
+            amount: amt,
+            date: new Date().toISOString(),
+            isSideGoal: false,
+          };
+        }
+      );
+      if (newDeposits.length > 0) {
+        setGoalDeposits((prev) => [...prev, ...newDeposits]);
+      }
+
       return allocation;
     },
     [goals]
   );
 
-  /** Compute aggregated total saved across all goals. */
+  /** Add funds to a specific goal directly (by goalId). */
+  const addFundsToGoal = useCallback(
+    (goalId: string, amount: number) => {
+      setGoalsRaw((prev) =>
+        prev.map((g) => {
+          if (g.id !== goalId) return g;
+          const deposit = Math.min(amount, g.targetAmount - g.currentAmount);
+          return { ...g, currentAmount: g.currentAmount + deposit };
+        })
+      );
+      const g = goals.find((x) => x.id === goalId);
+      const actualDeposit = g ? Math.min(amount, g.targetAmount - g.currentAmount) : amount;
+      if (actualDeposit > 0) {
+        setGoalDeposits((prev) => [
+          ...prev,
+          {
+            id: uuid(),
+            goalId,
+            goalTitle: g?.title || "Unknown",
+            amount: actualDeposit,
+            date: new Date().toISOString(),
+            isSideGoal: false,
+          },
+        ]);
+      }
+    },
+    [goals]
+  );
+
+  /* ── Side goal operations ───────────────────────────────────── */
+
+  const addSideGoal = useCallback(
+    (parentGoalId: string, title: string, targetAmount: number) => {
+      setGoalsRaw((prev) =>
+        prev.map((g) => {
+          if (g.id !== parentGoalId) return g;
+          const sg: SideGoal = { id: uuid(), title, targetAmount, currentAmount: 0, subGoals: [] };
+          return { ...g, sideGoals: [...(g.sideGoals || []), sg] };
+        })
+      );
+    },
+    []
+  );
+
+  const addSubSideGoal = useCallback(
+    (parentGoalId: string, sideGoalId: string, title: string, targetAmount: number) => {
+      setGoalsRaw((prev) =>
+        prev.map((g) => {
+          if (g.id !== parentGoalId) return g;
+          const sideGoals = (g.sideGoals || []).map((sg) => {
+            if (sg.id !== sideGoalId) return sg;
+            const sub: SideGoal = { id: uuid(), title, targetAmount, currentAmount: 0, subGoals: [] };
+            return { ...sg, subGoals: [...(sg.subGoals || []), sub] };
+          });
+          return { ...g, sideGoals };
+        })
+      );
+    },
+    []
+  );
+
+  const removeSideGoal = useCallback(
+    (parentGoalId: string, sideGoalId: string) => {
+      setGoalsRaw((prev) =>
+        prev.map((g) => {
+          if (g.id !== parentGoalId) return g;
+          return { ...g, sideGoals: (g.sideGoals || []).filter((sg) => sg.id !== sideGoalId) };
+        })
+      );
+    },
+    []
+  );
+
+  const addFundsToSideGoal = useCallback(
+    (parentGoalId: string, sideGoalId: string, amount: number) => {
+      let sideGoalTitle = "Side Goal";
+      setGoalsRaw((prev) =>
+        prev.map((g) => {
+          if (g.id !== parentGoalId) return g;
+          const sideGoals = (g.sideGoals || []).map((sg) => {
+            if (sg.id !== sideGoalId) return sg;
+            const deposit = Math.min(amount, sg.targetAmount - sg.currentAmount);
+            sideGoalTitle = sg.title;
+            return { ...sg, currentAmount: sg.currentAmount + deposit };
+          });
+          return { ...g, sideGoals };
+        })
+      );
+      if (amount > 0) {
+        setGoalDeposits((prev) => [
+          ...prev,
+          {
+            id: uuid(),
+            goalId: sideGoalId,
+            goalTitle: sideGoalTitle,
+            amount,
+            date: new Date().toISOString(),
+            isSideGoal: true,
+          },
+        ]);
+      }
+    },
+    []
+  );
+
   const totalSaved = useMemo(
     () => goals.reduce((sum, g) => sum + g.currentAmount, 0),
     [goals]
   );
 
-  /* ── Memoised context value to avoid unnecessary re-renders ── */
   const value = useMemo<GoalsContextValue>(
-    () => ({ goals, setGoals, addGoal, removeGoal, addFunds, totalSaved }),
-    [goals, setGoals, addGoal, removeGoal, addFunds, totalSaved]
+    () => ({
+      goals,
+      setGoals,
+      addGoal,
+      removeGoal,
+      addFunds,
+      addFundsToGoal,
+      addSideGoal,
+      addSubSideGoal,
+      removeSideGoal,
+      addFundsToSideGoal,
+      goalDeposits,
+      totalSaved,
+    }),
+    [goals, setGoals, addGoal, removeGoal, addFunds, addFundsToGoal, addSideGoal, addSubSideGoal, removeSideGoal, addFundsToSideGoal, goalDeposits, totalSaved]
+  );
+
+  return <GoalsContext.Provider value={value}>{children}</GoalsContext.Provider>;
+}
+
+export function useGoals(): GoalsContextValue {
+  const ctx = useContext(GoalsContext);
+  if (!ctx) throw new Error("useGoals() must be used within a <GoalsProvider>");
+  return ctx;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  SPENDING PROVIDER
+ * ═══════════════════════════════════════════════════════════════════ */
+
+const SpendingContext = createContext<SpendingContextValue | undefined>(undefined);
+
+export function SpendingProvider({
+  session,
+  children,
+}: {
+  session: AuthSession;
+  children: React.ReactNode;
+}) {
+  const key = storageKey("money-goals-spending", session);
+
+  const [entries, setEntries] = useState<SpendingEntry[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const isFirst = useRef(true);
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; return; }
+    localStorage.setItem(key, JSON.stringify(entries));
+  }, [entries, key]);
+
+  const addEntry = useCallback((entry: Omit<SpendingEntry, "id">) => {
+    setEntries((prev) => [...prev, { ...entry, id: uuid() }]);
+  }, []);
+
+  const removeEntry = useCallback((id: string) => {
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
+  const value = useMemo<SpendingContextValue>(
+    () => ({ entries, addEntry, removeEntry }),
+    [entries, addEntry, removeEntry]
+  );
+
+  return <SpendingContext.Provider value={value}>{children}</SpendingContext.Provider>;
+}
+
+export function useSpending(): SpendingContextValue {
+  const ctx = useContext(SpendingContext);
+  if (!ctx) throw new Error("useSpending() must be used within a <SpendingProvider>");
+  return ctx;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  BILLS PROVIDER
+ * ═══════════════════════════════════════════════════════════════════ */
+
+const BillsContext = createContext<BillsContextValue | undefined>(undefined);
+
+export function BillsProvider({
+  session,
+  children,
+}: {
+  session: AuthSession;
+  children: React.ReactNode;
+}) {
+  const key = storageKey("money-goals-bills", session);
+  const paymentsKey = storageKey("money-goals-bill-payments", session);
+
+  const [bills, setBills] = useState<Bill[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [billPayments, setBillPayments] = useState<BillPayment[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(paymentsKey);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const isFirst = useRef(true);
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; return; }
+    localStorage.setItem(key, JSON.stringify(bills));
+  }, [bills, key]);
+
+  useEffect(() => {
+    localStorage.setItem(paymentsKey, JSON.stringify(billPayments));
+  }, [billPayments, paymentsKey]);
+
+  const addBill = useCallback((bill: Omit<Bill, "id">) => {
+    setBills((prev) => [...prev, { ...bill, id: uuid() }]);
+  }, []);
+
+  const removeBill = useCallback((id: string) => {
+    setBills((prev) => prev.filter((b) => b.id !== id));
+  }, []);
+
+  const togglePaid = useCallback((id: string) => {
+    setBills((prev) =>
+      prev.map((b) => {
+        if (b.id !== id) return b;
+        const newPaid = !b.isPaid;
+        if (newPaid) {
+          // Record a payment when marking as paid
+          setBillPayments((p) => [
+            ...p,
+            {
+              id: uuid(),
+              billName: b.name,
+              amount: b.amount,
+              date: new Date().toISOString(),
+            },
+          ]);
+        }
+        return {
+          ...b,
+          isPaid: newPaid,
+          lastPaidDate: newPaid ? new Date().toISOString() : b.lastPaidDate,
+        };
+      })
+    );
+  }, []);
+
+  const value = useMemo<BillsContextValue>(
+    () => ({ bills, billPayments, addBill, removeBill, togglePaid }),
+    [bills, billPayments, addBill, removeBill, togglePaid]
+  );
+
+  return <BillsContext.Provider value={value}>{children}</BillsContext.Provider>;
+}
+
+export function useBills(): BillsContextValue {
+  const ctx = useContext(BillsContext);
+  if (!ctx) throw new Error("useBills() must be used within a <BillsProvider>");
+  return ctx;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  UNALLOCATED FUNDS PROVIDER  (Trading Journal → Holding Area)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+const UnallocatedFundsContext = createContext<UnallocatedFundsContextValue | undefined>(undefined);
+
+export function UnallocatedFundsProvider({
+  session,
+  children,
+}: {
+  session: AuthSession;
+  children: React.ReactNode;
+}) {
+  const key = storageKey("money-goals-unallocated", session);
+
+  const [deposits, setDeposits] = useState<UnallocatedDeposit[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const isFirst = useRef(true);
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; return; }
+    localStorage.setItem(key, JSON.stringify(deposits));
+  }, [deposits, key]);
+
+  const totalUnallocated = useMemo(
+    () => deposits.reduce((sum, d) => sum + d.amountCAD, 0),
+    [deposits]
+  );
+
+  const addDeposit = useCallback((deposit: Omit<UnallocatedDeposit, "id">) => {
+    setDeposits((prev) => [...prev, { ...deposit, id: uuid() }]);
+  }, []);
+
+  const removeDeposit = useCallback((id: string) => {
+    setDeposits((prev) => prev.filter((d) => d.id !== id));
+  }, []);
+
+  /** Reduce a deposit's amountCAD by the allocated amount. Removes if fully allocated. */
+  const allocateDeposit = useCallback((depositId: string, amount: number) => {
+    setDeposits((prev) =>
+      prev
+        .map((d) => {
+          if (d.id !== depositId) return d;
+          const remaining = d.amountCAD - amount;
+          if (remaining <= 0.01) return null; // fully allocated → remove
+          return { ...d, amountCAD: remaining };
+        })
+        .filter(Boolean) as UnallocatedDeposit[]
+    );
+  }, []);
+
+  const value = useMemo<UnallocatedFundsContextValue>(
+    () => ({ deposits, totalUnallocated, addDeposit, removeDeposit, allocateDeposit }),
+    [deposits, totalUnallocated, addDeposit, removeDeposit, allocateDeposit]
   );
 
   return (
-    <GoalsContext.Provider value={value}>{children}</GoalsContext.Provider>
+    <UnallocatedFundsContext.Provider value={value}>
+      {children}
+    </UnallocatedFundsContext.Provider>
   );
 }
 
-/* ── Consumer hook ─────────────────────────────────────────────── */
-/**
- * `useGoals()` provides typed access to the global goals context.
- * Must be called inside a `<GoalsProvider>`.
- *
- * @throws Error if used outside the provider tree.
- */
-export function useGoals(): GoalsContextValue {
-  const ctx = useContext(GoalsContext);
-  if (!ctx) {
-    throw new Error("useGoals() must be used within a <GoalsProvider>");
-  }
+export function useUnallocatedFunds(): UnallocatedFundsContextValue {
+  const ctx = useContext(UnallocatedFundsContext);
+  if (!ctx) throw new Error("useUnallocatedFunds() must be used within an <UnallocatedFundsProvider>");
   return ctx;
 }

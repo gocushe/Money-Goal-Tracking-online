@@ -1,108 +1,62 @@
 /**
- * MainView.tsx  –  Primary Visual Experience (v2)
- * --------------------------------------------------
- * Renders the vertical goal-chain visualization with animated
- * "water flow" connections between nodes.
- *
- * Layout (bottom → top):
- *   ┌───────────┐
- *   │  Goal N   │  ← highest orderIndex, top of screen
- *   │     │     │
- *   │   pipe    │  ← SVG path with neon glow
- *   │     │     │
- *   │  Goal 1   │
- *   │     │     │
- *   │  Goal 0   │  ← lowest orderIndex, bottom of screen
- *   └───────────┘
- *
- * Sequential flow animation (v2):
- *   When funds are added, the animation only plays on pipe segments
- *   between the goals that actually received money.  If goals 0, 1, and 2
- *   all receive funds, pipe 0→1 animates first, then 1→2 — sequentially
- *   with staggered delays.  Pipes outside that range stay static.
- *
- * Key architectural decisions:
- *  • Goals are sorted by `orderIndex` ascending (0 = bottom).
- *  • The scroll container is reversed so the bottom-most goal appears
- *    at the visual bottom even without JS scroll magic.
- *  • `highlightedGoals` tracks which nodes should pulse after an
- *    `addFunds` event, cleared after a short delay.
- *  • `flowRange` stores the min/max indices of goals that received
- *    funds so only those pipe segments animate.
+ * MainView.tsx  –  Goal Chain Visualization with Side Goals
+ * -----------------------------------------------------------
+ * Renders the vertical goal-chain with yellow side-goal branches.
  */
 
 "use client";
 
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, Wallet } from "lucide-react";
+import { Menu, Wallet, Plus, X, DollarSign } from "lucide-react";
 import { useGoals } from "@/lib/store";
 import GoalNode from "@/components/GoalNode";
+import SideGoalNode from "@/components/SideGoalNode";
 import AddFunds from "@/components/AddFunds";
+import FundingInbox from "@/components/FundingInbox";
 import SettingsView from "@/components/SettingsView";
+import { AuthSession, Goal } from "@/lib/types";
+import { useExternalSync } from "@/lib/useExternalSync";
 
 /* ── Constants ─────────────────────────────────────────────────── */
-
-/** Vertical gap between each goal node (px). */
 const NODE_GAP = 28;
-
-/** Duration (ms) to keep a node highlighted after receiving funds. */
 const HIGHLIGHT_DURATION = 3000;
-
-/** Duration (ms) for one pipe segment's flow animation. */
 const SEGMENT_ANIM_DURATION = 0.65;
-
-/** Stagger delay (s) between consecutive pipe segment animations. */
 const SEGMENT_STAGGER = 0.45;
 
 /* ── Component ─────────────────────────────────────────────────── */
 
-export default function MainView() {
-  const { goals, totalSaved } = useGoals();
+interface MainViewProps {
+  session: AuthSession;
+  onLogout: () => void;
+}
 
-  /** Set of goal IDs currently glowing after a fund event. */
-  const [highlightedGoals, setHighlightedGoals] = useState<Set<string>>(
-    new Set()
-  );
+export default function MainView({ session, onLogout }: MainViewProps) {
+  const { goals, totalSaved, addSideGoal } = useGoals();
 
-  /** Whether the settings panel is open. */
+  // Poll for external data (daytrading app payout allocations)
+  useExternalSync(session);
+
+  const [highlightedGoals, setHighlightedGoals] = useState<Set<string>>(new Set());
   const [settingsOpen, setSettingsOpen] = useState(false);
-
-  /**
-   * `flowRange` defines which pipe segments should animate.
-   * `null` means no animation is in progress.
-   * `{ minIdx, maxIdx }` means pipes connecting goals at
-   * positions minIdx..maxIdx should animate sequentially.
-   */
-  const [flowRange, setFlowRange] = useState<{
-    minIdx: number;
-    maxIdx: number;
-  } | null>(null);
-
-  /** Ref to the scroll container so we can auto-scroll to bottom. */
+  const [flowRange, setFlowRange] = useState<{ minIdx: number; maxIdx: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  /** Goals sorted bottom (index 0) → top. */
+  /* Side goal add modal */
+  const [sideGoalModal, setSideGoalModal] = useState<{ goalId: string } | null>(null);
+  const [sgTitle, setSgTitle] = useState("");
+  const [sgAmount, setSgAmount] = useState("");
+
   const sortedGoals = useMemo(
     () => [...goals].sort((a, b) => a.orderIndex - b.orderIndex),
     [goals]
   );
 
-  /**
-   * Called when the AddFunds component distributes money.
-   * Determines *which* goals received funds and only animates the
-   * pipe segments between them — not every pipe in the chain.
-   */
   const handleFundsAdded = useCallback(
     (_amount: number, allocation: Record<string, number>) => {
       const fundedIds = new Set(Object.keys(allocation));
       setHighlightedGoals(fundedIds);
 
-      /*
-       * Find the contiguous index range of goals that received funds.
-       * We scan the sorted array and record the first and last index
-       * that appears in the allocation map.
-       */
       let minIdx = Infinity;
       let maxIdx = -Infinity;
       const sorted = [...goals].sort((a, b) => a.orderIndex - b.orderIndex);
@@ -113,16 +67,11 @@ export default function MainView() {
         }
       });
 
-      if (minIdx <= maxIdx) {
-        setFlowRange({ minIdx, maxIdx });
-      }
+      if (minIdx <= maxIdx) setFlowRange({ minIdx, maxIdx });
 
-      /* Calculate total animation time based on number of segments. */
       const segmentCount = maxIdx - minIdx;
-      const totalAnimTime =
-        (segmentCount * SEGMENT_STAGGER + SEGMENT_ANIM_DURATION) * 1000 + 600;
+      const totalAnimTime = (segmentCount * SEGMENT_STAGGER + SEGMENT_ANIM_DURATION) * 1000 + 600;
 
-      /* Clear highlights after the full sequential animation plays out. */
       setTimeout(() => {
         setHighlightedGoals(new Set());
         setFlowRange(null);
@@ -131,43 +80,43 @@ export default function MainView() {
     [goals]
   );
 
-  /** Auto-scroll to the bottom (lowest goal) on mount. */
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [sortedGoals.length]);
 
-  /**
-   * Compute total target across all goals (used in the header summary).
-   */
   const totalTarget = useMemo(
     () => goals.reduce((sum, g) => sum + g.targetAmount, 0),
     [goals]
   );
 
+  const handleAddSideGoal = useCallback(() => {
+    const amount = parseFloat(sgAmount);
+    if (!sgTitle.trim() || !amount || amount <= 0 || !sideGoalModal) return;
+    addSideGoal(sideGoalModal.goalId, sgTitle.trim(), amount);
+    setSideGoalModal(null);
+    setSgTitle("");
+    setSgAmount("");
+  }, [sgTitle, sgAmount, sideGoalModal, addSideGoal]);
+
   return (
     <>
-      {/* ── Top bar: hamburger menu + summary ─────────────────── */}
-      <header className="fixed top-0 inset-x-0 z-30 flex items-center justify-between px-5 pt-5 pb-3 bg-gradient-to-b from-background via-background/90 to-transparent">
-        {/* Hamburger menu button */}
+      {/* ── Top bar ─────────────────────────────────────────── */}
+      <header className="fixed top-[88px] inset-x-0 z-30 flex items-center justify-between px-5 pt-3 pb-3 bg-gradient-to-b from-background via-background/90 to-transparent">
         <motion.button
           whileTap={{ scale: 0.85 }}
           onClick={() => setSettingsOpen(true)}
-          className="p-2.5 rounded-xl bg-surface/60 backdrop-blur
-                     border border-white/5 text-muted
-                     hover:text-foreground transition-colors"
+          className="p-2.5 rounded-xl bg-surface/60 backdrop-blur border border-white/5 text-muted hover:text-foreground transition-colors"
           aria-label="Open settings"
         >
           <Menu className="w-5 h-5" />
         </motion.button>
 
-        {/* Wallet summary badge — $ amount at 1.3× (was text-sm, now ~18.2px) */}
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl
-                     bg-surface/60 backdrop-blur border border-white/5"
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-surface/60 backdrop-blur border border-white/5"
         >
           <Wallet className="w-4 h-4 text-accent" />
           <span className="text-[18px] font-mono text-accent-soft">
@@ -179,258 +128,294 @@ export default function MainView() {
         </motion.div>
       </header>
 
-      {/* ── Scrollable goal visualization ─────────────────────── */}
-      <div
-        ref={scrollRef}
-        className="fixed inset-0 pt-20 pb-28 overflow-y-auto"
-      >
-        {/**
-         * The chain is rendered bottom-to-top using flex-col-reverse
-         * so the lowest-order goal naturally sits at the visual bottom.
-         */}
+      {/* ── Funding Inbox (unallocated deposits from Trading Journal) */}
+      <div className="fixed top-[140px] inset-x-0 z-20">
+        <FundingInbox />
+      </div>
+
+      {/* ── Scrollable goal visualization ───────────────────── */}
+      <div ref={scrollRef} className="fixed inset-0 pt-[140px] pb-28 overflow-y-auto">
         <div className="min-h-full flex flex-col-reverse items-center justify-start px-4 py-8 gap-0">
           {sortedGoals.map((goal, index) => {
-            /**
-             * Determine if this pipe segment (between goal[index] and
-             * goal[index+1]) should animate.  A pipe only animates if
-             * both its lower and upper goal are within the flowRange.
-             */
             const pipeActive =
-              flowRange !== null &&
-              index >= flowRange.minIdx &&
-              index < flowRange.maxIdx;
-
-            /**
-             * Sequential stagger: the pipe at the bottom of the funded
-             * range animates first, then each subsequent pipe after a delay.
-             */
-            const pipeStaggerIndex =
-              flowRange !== null ? index - flowRange.minIdx : 0;
+              flowRange !== null && index >= flowRange.minIdx && index < flowRange.maxIdx;
+            const pipeStaggerIndex = flowRange !== null ? index - flowRange.minIdx : 0;
 
             return (
               <div key={goal.id} className="flex flex-col items-center">
-                {/* ── Pipe connector to the next node above ──────── */}
+                {/* Pipe connector */}
                 {index < sortedGoals.length - 1 && (
                   <PipeSegment
                     active={pipeActive}
-                    filled={goal.currentAmount >= goal.targetAmount}
+                    filled={goal.currentAmount >= goal.targetAmount && sortedGoals[index + 1]?.currentAmount > 0}
+                    permanentLit={goal.currentAmount >= goal.targetAmount}
                     sequenceIndex={pipeStaggerIndex}
                   />
                 )}
 
-                {/* ── Goal circle node ──────────────────────────── */}
-                <GoalNode
-                  goal={goal}
-                  index={index}
-                  highlight={highlightedGoals.has(goal.id)}
-                />
+                {/* Goal node with side goals */}
+                <div className="flex items-center gap-4">
+                  {/* Left side goals */}
+                  <div className="flex flex-col gap-2 items-end min-w-[120px]">
+                    {(goal.sideGoals || [])
+                      .filter((_, i) => i % 2 === 0)
+                      .map((sg) => (
+                        <SideGoalBranch key={sg.id} parentGoalId={goal.id} sideGoal={sg} side="left" />
+                      ))}
+                  </div>
+
+                  {/* Main goal circle */}
+                  <div className="relative">
+                    <GoalNode goal={goal} index={index} highlight={highlightedGoals.has(goal.id)} />
+                    {/* Add side goal button */}
+                    <motion.button
+                      whileTap={{ scale: 0.85 }}
+                      onClick={() => setSideGoalModal({ goalId: goal.id })}
+                      className="absolute -right-3 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
+                                 bg-yellow-500/20 border border-yellow-500/40 text-yellow-400
+                                 flex items-center justify-center hover:bg-yellow-500/30 transition-colors"
+                      title="Add side goal"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </motion.button>
+                  </div>
+
+                  {/* Right side goals */}
+                  <div className="flex flex-col gap-2 items-start min-w-[120px]">
+                    {(goal.sideGoals || [])
+                      .filter((_, i) => i % 2 === 1)
+                      .map((sg) => (
+                        <SideGoalBranch key={sg.id} parentGoalId={goal.id} sideGoal={sg} side="right" />
+                      ))}
+                  </div>
+                </div>
               </div>
             );
           })}
 
-          {/* ── Empty state ────────────────────────────────────── */}
           {sortedGoals.length === 0 && (
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-muted text-sm text-center mt-40"
-            >
-              No goals yet.
-              <br />
-              Tap the menu to add your first goal!
+            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-muted text-sm text-center mt-40">
+              No goals yet. Tap the menu to add your first goal!
             </motion.p>
           )}
         </div>
       </div>
 
-      {/* ── Add Funds bar (fixed bottom) ──────────────────────── */}
+      {/* ── Add Funds bar ───────────────────────────────────── */}
       <AddFunds onAdd={handleFundsAdded} />
 
-      {/* ── Settings panel ────────────────────────────────────── */}
+      {/* ── Settings panel ──────────────────────────────────── */}
       <SettingsView
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        session={session}
+        onLogout={onLogout}
       />
+
+      {/* ── Side Goal Modal ─────────────────────────────────── */}
+      <AnimatePresence>
+        {sideGoalModal && (
+          <>
+            <motion.div
+              key="sg-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSideGoalModal(null)}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              key="sg-modal"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="fixed inset-x-4 top-1/3 z-50 max-w-sm mx-auto bg-surface rounded-2xl p-5 border border-yellow-500/20"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-yellow-400">Add Side Goal</h3>
+                <button onClick={() => setSideGoalModal(null)} className="text-muted hover:text-foreground">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  placeholder="Side goal name"
+                  value={sgTitle}
+                  onChange={(e) => setSgTitle(e.target.value)}
+                  className="w-full bg-background/60 rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted outline-none border border-white/5 focus:border-yellow-500/40 transition-colors"
+                />
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="Target amount ($)"
+                  value={sgAmount}
+                  onChange={(e) => setSgAmount(e.target.value)}
+                  className="w-full bg-background/60 rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted outline-none border border-white/5 focus:border-yellow-500/40 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleAddSideGoal}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-yellow-500/20 text-yellow-400 text-sm font-medium hover:bg-yellow-500/30 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Side Goal
+                </motion.button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </>
   );
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  PipeSegment  –  Glowing SVG connector between two GoalNodes
- * ═══════════════════════════════════════════════════════════════════
- *
- * Renders a short vertical SVG "pipe" with:
- *  • A dim base line (always visible).
- *  • A bright neon overlay that animates upward when `active` is true.
- *  • A large energy orb that travels the path during flow.
- *  • When the goal below is COMPLETE, the pipe becomes a thicker,
- *    permanently-lit purple line to show the "filled" state.
- *
- * Sequential animation (v2):
- *  `active` is now per-segment — only pipes within the funded range
- *  receive `active=true`.  `sequenceIndex` determines the stagger
- *  delay (0 = first pipe to animate, 1 = next, etc.) so the flow
- *  travels upward one segment at a time.
- *
- * Props:
- *  `active`        – whether THIS pipe should run the flow animation.
- *  `filled`        – whether the goal beneath is fully funded.
- *  `sequenceIndex` – position in the sequential animation chain (0-based).
- */
+ *  SideGoalBranch – yellow branch with connector line
+ * ═══════════════════════════════════════════════════════════════════ */
+
+import { SideGoal } from "@/lib/types";
+
+function SideGoalBranch({
+  parentGoalId,
+  sideGoal,
+  side,
+}: {
+  parentGoalId: string;
+  sideGoal: SideGoal;
+  side: "left" | "right";
+}) {
+  const { addSubSideGoal, removeSideGoal, addFundsToSideGoal } = useGoals();
+  const [showAddSub, setShowAddSub] = useState(false);
+  const [subTitle, setSubTitle] = useState("");
+  const [subAmount, setSubAmount] = useState("");
+  const [showFundInput, setShowFundInput] = useState(false);
+  const [fundAmount, setFundAmount] = useState("");
+
+  const handleAddSub = () => {
+    const amt = parseFloat(subAmount);
+    if (!subTitle.trim() || !amt || amt <= 0) return;
+    addSubSideGoal(parentGoalId, sideGoal.id, subTitle.trim(), amt);
+    setShowAddSub(false);
+    setSubTitle("");
+    setSubAmount("");
+  };
+
+  const handleAddFunds = () => {
+    const amt = parseFloat(fundAmount);
+    if (!amt || amt <= 0) return;
+    addFundsToSideGoal(parentGoalId, sideGoal.id, amt);
+    setShowFundInput(false);
+    setFundAmount("");
+  };
+
+  return (
+    <div className={`flex ${side === "left" ? "flex-row-reverse" : "flex-row"} items-center gap-1`}>
+      {/* Connector line */}
+      <div className="w-6 h-0.5 bg-yellow-500/40" />
+
+      <div className="flex flex-col items-center gap-1">
+        <SideGoalNode
+          sideGoal={sideGoal}
+          onRemove={() => removeSideGoal(parentGoalId, sideGoal.id)}
+          onAddFunds={() => setShowFundInput(!showFundInput)}
+          onAddSubGoal={() => setShowAddSub(!showAddSub)}
+        />
+
+        {/* Fund input */}
+        {showFundInput && (
+          <div className="flex items-center gap-1 mt-1">
+            <input
+              type="number"
+              placeholder="$"
+              value={fundAmount}
+              onChange={(e) => setFundAmount(e.target.value)}
+              className="w-16 bg-background/60 rounded-lg px-2 py-1 text-[10px] text-foreground outline-none border border-yellow-500/30 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <button onClick={handleAddFunds} className="text-yellow-400 text-[10px]">+</button>
+          </div>
+        )}
+
+        {/* Add sub-goal form */}
+        {showAddSub && (
+          <div className="flex flex-col gap-1 mt-1 w-24">
+            <input
+              type="text"
+              placeholder="Name"
+              value={subTitle}
+              onChange={(e) => setSubTitle(e.target.value)}
+              className="w-full bg-background/60 rounded-lg px-2 py-1 text-[10px] text-foreground outline-none border border-yellow-500/30"
+            />
+            <input
+              type="number"
+              placeholder="Amount"
+              value={subAmount}
+              onChange={(e) => setSubAmount(e.target.value)}
+              className="w-full bg-background/60 rounded-lg px-2 py-1 text-[10px] text-foreground outline-none border border-yellow-500/30 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <button onClick={handleAddSub} className="text-yellow-400 text-[10px] bg-yellow-500/10 rounded-lg py-1">Add</button>
+          </div>
+        )}
+
+        {/* Sub-goals */}
+        {(sideGoal.subGoals || []).map((sub) => (
+          <div key={sub.id} className="flex flex-col items-center mt-1">
+            <div className="w-0.5 h-3 bg-yellow-500/30" />
+            <SideGoalNode sideGoal={sub} small />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  PipeSegment – Glowing SVG connector
+ * ═══════════════════════════════════════════════════════════════════ */
 
 interface PipeSegmentProps {
   active: boolean;
   filled: boolean;
+  permanentLit: boolean;
   sequenceIndex: number;
 }
 
-function PipeSegment({ active, filled, sequenceIndex }: PipeSegmentProps) {
-  /** Height of the pipe in pixels (slightly taller for bigger nodes). */
+function PipeSegment({ active, filled, permanentLit, sequenceIndex }: PipeSegmentProps) {
   const PIPE_HEIGHT = 70 + NODE_GAP;
-
-  /**
-   * Line thickness changes depending on state:
-   *  - Default dim pipe:       2 px
-   *  - Active (animating):     3 px
-   *  - Filled (goal complete): 5 px  ← noticeably thicker
-   */
   const baseStroke = 2;
-  const litStroke = filled ? 5 : 3;
-
-  /** The travelling energy orb dimensions (large capsule). */
+  const litStroke = filled ? 5 : permanentLit ? 4 : 3;
   const ORB_RX = 9;
   const ORB_RY = 14;
-
-  /** Stagger delay for this specific segment in the sequence. */
   const delay = sequenceIndex * SEGMENT_STAGGER;
+  const shouldGlow = filled || permanentLit;
 
   return (
-    <div
-      className="relative flex items-center justify-center"
-      style={{ height: PIPE_HEIGHT }}
-    >
-      <svg
-        width="32"
-        height={PIPE_HEIGHT}
-        viewBox={`0 0 32 ${PIPE_HEIGHT}`}
-        className="overflow-visible"
-      >
-        {/* ── Base pipe (always visible, dim) ────────────────── */}
-        <line
-          x1="16"
-          y1="0"
-          x2="16"
-          y2={PIPE_HEIGHT}
-          stroke="rgba(113,113,122,0.15)"
-          strokeWidth={baseStroke}
-          strokeLinecap="round"
-        />
-
-        {/* ── Lit pipe — becomes thicker + glows when filled ── */}
+    <div className="relative flex items-center justify-center" style={{ height: PIPE_HEIGHT }}>
+      <svg width="32" height={PIPE_HEIGHT} viewBox={`0 0 32 ${PIPE_HEIGHT}`} className="overflow-visible">
+        <line x1="16" y1="0" x2="16" y2={PIPE_HEIGHT} stroke="rgba(113,113,122,0.15)" strokeWidth={baseStroke} strokeLinecap="round" />
         <motion.line
-          x1="16"
-          y1={PIPE_HEIGHT}
-          x2="16"
-          y2="0"
+          x1="16" y1={PIPE_HEIGHT} x2="16" y2="0"
           stroke={filled ? "url(#pipeGlowFilled)" : "url(#pipeGlow)"}
-          strokeWidth={litStroke}
-          strokeLinecap="round"
-          initial={{ pathLength: filled ? 1 : 0 }}
-          animate={{
-            pathLength: filled || active ? 1 : 0,
-            opacity: filled || active ? 1 : 0,
-          }}
-          transition={{
-            duration: SEGMENT_ANIM_DURATION,
-            delay: active ? delay : 0,
-            ease: "easeInOut",
-          }}
-          className={
-            filled
-              ? "glow-purple-strong"
-              : active
-              ? "glow-purple"
-              : ""
-          }
+          strokeWidth={litStroke} strokeLinecap="round"
+          initial={{ pathLength: shouldGlow ? 1 : 0 }}
+          animate={{ pathLength: shouldGlow || active ? 1 : 0, opacity: shouldGlow || active ? 1 : 0 }}
+          transition={{ duration: shouldGlow ? 0 : SEGMENT_ANIM_DURATION, delay: active && !shouldGlow ? delay : 0, ease: "easeInOut" }}
+          className={filled ? "glow-purple-strong" : shouldGlow ? "glow-purple" : active ? "glow-purple" : ""}
         />
-
-        {/* ── Travelling energy orb (only on active segments) ── */}
         <AnimatePresence>
           {active && (
-            <motion.g
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              {/*
-               * Three-layer orb: outer glow → mid glow → bright core.
-               * Each layer travels bottom-to-top with the same
-               * sequential delay so the orb flows pipe-by-pipe.
-               */}
-
-              {/* Outer soft glow (large, semi-transparent) */}
-              <motion.ellipse
-                cx="16"
-                rx={ORB_RX + 6}
-                ry={ORB_RY + 10}
-                fill="rgba(168,85,247,0.12)"
-                initial={{ cy: PIPE_HEIGHT }}
-                animate={{ cy: 0 }}
-                transition={{
-                  duration: SEGMENT_ANIM_DURATION,
-                  delay,
-                  ease: "easeInOut",
-                }}
-              />
-
-              {/* Mid glow */}
-              <motion.ellipse
-                cx="16"
-                rx={ORB_RX}
-                ry={ORB_RY}
-                fill="rgba(168,85,247,0.3)"
-                className="glow-purple-strong"
-                initial={{ cy: PIPE_HEIGHT }}
-                animate={{ cy: 0 }}
-                transition={{
-                  duration: SEGMENT_ANIM_DURATION,
-                  delay,
-                  ease: "easeInOut",
-                }}
-              />
-
-              {/* Core bright centre */}
-              <motion.ellipse
-                cx="16"
-                rx={ORB_RX - 3}
-                ry={ORB_RY - 3}
-                fill="#c084fc"
-                className="glow-purple-strong"
-                initial={{ cy: PIPE_HEIGHT, opacity: 0 }}
-                animate={{ cy: 0, opacity: [0, 1, 1, 0.2] }}
-                transition={{
-                  duration: SEGMENT_ANIM_DURATION,
-                  delay,
-                  ease: "easeInOut",
-                }}
-              />
+            <motion.g initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <motion.ellipse cx="16" rx={ORB_RX + 6} ry={ORB_RY + 10} fill="rgba(168,85,247,0.12)" initial={{ cy: PIPE_HEIGHT }} animate={{ cy: 0 }} transition={{ duration: SEGMENT_ANIM_DURATION, delay, ease: "easeInOut" }} />
+              <motion.ellipse cx="16" rx={ORB_RX} ry={ORB_RY} fill="rgba(168,85,247,0.3)" className="glow-purple-strong" initial={{ cy: PIPE_HEIGHT }} animate={{ cy: 0 }} transition={{ duration: SEGMENT_ANIM_DURATION, delay, ease: "easeInOut" }} />
+              <motion.ellipse cx="16" rx={ORB_RX - 3} ry={ORB_RY - 3} fill="#c084fc" className="glow-purple-strong" initial={{ cy: PIPE_HEIGHT, opacity: 0 }} animate={{ cy: 0, opacity: [0, 1, 1, 0.2] }} transition={{ duration: SEGMENT_ANIM_DURATION, delay, ease: "easeInOut" }} />
             </motion.g>
           )}
         </AnimatePresence>
-
-        {/* ── Gradient definitions ────────────────────────────── */}
         <defs>
-          {/* Standard pipe gradient (unfilled goals). */}
           <linearGradient id="pipeGlow" x1="0" y1="1" x2="0" y2="0">
             <stop offset="0%" stopColor="#a855f7" />
             <stop offset="100%" stopColor="#c084fc" />
           </linearGradient>
-
-          {/*
-           * Brighter gradient for COMPLETED goal pipes.
-           * Uses more saturated purple to visually distinguish
-           * "filled" connections from still-in-progress ones.
-           */}
           <linearGradient id="pipeGlowFilled" x1="0" y1="1" x2="0" y2="0">
             <stop offset="0%" stopColor="#9333ea" />
             <stop offset="50%" stopColor="#a855f7" />

@@ -38,4 +38,7 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+
+# external app queue
+/.external-queue
 next-env.d.ts

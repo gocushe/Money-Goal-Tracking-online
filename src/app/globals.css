@@ -73,6 +73,17 @@ body {
     drop-shadow(0 0 28px var(--accent-glow-strong));
 }
 
+/* ── Utility: yellow neon glow for side goals ─────────────────── */
+.glow-yellow {
+  filter: drop-shadow(0 0 6px rgba(234, 179, 8, 0.45))
+    drop-shadow(0 0 20px rgba(234, 179, 8, 0.45));
+}
+
+.glow-yellow-strong {
+  filter: drop-shadow(0 0 8px rgba(234, 179, 8, 0.7))
+    drop-shadow(0 0 28px rgba(234, 179, 8, 0.7));
+}
+
 /* ── Utility: animated neon pulse ─────────────────────────────── */
 @keyframes neon-pulse {
   0%,
@@ -87,4 +98,20 @@ body {
 }
 .animate-neon-pulse {
   animation: neon-pulse 3s ease-in-out infinite;
+}
+
+/* ── Yellow neon pulse (side goals) ───────────────────────────── */
+@keyframes yellow-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 6px rgba(234, 179, 8, 0.45))
+      drop-shadow(0 0 20px rgba(234, 179, 8, 0.45));
+  }
+  50% {
+    filter: drop-shadow(0 0 12px rgba(234, 179, 8, 0.7))
+      drop-shadow(0 0 36px rgba(234, 179, 8, 0.7));
+  }
+}
+.animate-yellow-pulse {
+  animation: yellow-pulse 3s ease-in-out infinite;
 }

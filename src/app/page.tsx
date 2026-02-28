@@ -1,18 +1,9 @@
 /**
  * page.tsx  –  Application Entry Point
  * ----------------------------------------
- * This is the single route for the entire SPA.  It orchestrates:
- *
- *  1. **PIN Screen** – Shown on initial load.  User must enter the
- *     correct PIN ("1234") before proceeding.
- *  2. **Main View**  – The goal-chain visualization with water-flow
- *     animations, fund input, and settings panel.
- *
- * Authentication state is kept in React state (not persisted) so the
- * PIN is required on every page load / refresh.
- *
- * The `GoalsProvider` wraps the entire authenticated UI so all child
- * components share the same goal state.
+ * Orchestrates:
+ *  1. PIN Screen (letter + code) — multi-account auth.
+ *  2. Tab-based main app — Money Goals, Spending, Bills.
  */
 
 "use client";
@@ -20,37 +11,30 @@
 import React, { useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import PinScreen from "@/components/PinScreen";
-import MainView from "@/components/MainView";
-import { GoalsProvider } from "@/lib/store";
-
-/* ── Page Component ────────────────────────────────────────────── */
+import AppShell from "@/components/AppShell";
+import { GoalsProvider, SpendingProvider, BillsProvider, UnallocatedFundsProvider } from "@/lib/store";
+import { AuthSession } from "@/lib/types";
 
 export default function Home() {
-  /**
-   * `authenticated` flips to `true` once the correct PIN is entered.
-   * It is intentionally *not* persisted — every refresh requires re-auth.
-   */
-  const [authenticated, setAuthenticated] = useState(false);
+  const [session, setSession] = useState<AuthSession | null>(null);
 
   return (
     <main className="min-h-dvh bg-background text-foreground">
       <AnimatePresence mode="wait">
-        {!authenticated ? (
-          /**
-           * Gate: PIN lock screen.
-           * `onSuccess` callback transitions the user to the main app.
-           */
+        {!session ? (
           <PinScreen
             key="pin"
-            onSuccess={() => setAuthenticated(true)}
+            onSuccess={(s) => setSession(s)}
           />
         ) : (
-          /**
-           * Authenticated: Goal tracker wrapped in the state provider.
-           * Every child can call `useGoals()` to read/write goal data.
-           */
-          <GoalsProvider key="app">
-            <MainView />
+          <GoalsProvider key={`goals-${session.letter}-${session.code}`} session={session}>
+            <SpendingProvider session={session}>
+              <BillsProvider session={session}>
+                <UnallocatedFundsProvider session={session}>
+                  <AppShell session={session} onLogout={() => setSession(null)} />
+                </UnallocatedFundsProvider>
+              </BillsProvider>
+            </SpendingProvider>
           </GoalsProvider>
         )}
       </AnimatePresence>
