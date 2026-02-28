@@ -28,10 +28,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
+import { getRedisClient } from "@/lib/redis";
 
 /* ── Server-side queue (file-based, works without Redis) ───────── */
 
 const QUEUE_DIR = path.join(process.cwd(), ".external-queue");
+const REDIS_INBOX_PREFIX = "money-goals:inbox";
+
+function redisKey(letter: string, code: string) {
+  return `${REDIS_INBOX_PREFIX}:${letter}-${code}`;
+}
 
 async function ensureQueueDir() {
   try {
@@ -69,6 +75,15 @@ async function writeQueue(letter: string, code: string, entries: QueuedDeposit[]
   await fs.writeFile(queueFile(letter, code), JSON.stringify(entries, null, 2));
 }
 
+async function getRedisSafe() {
+  try {
+    return await getRedisClient();
+  } catch (err) {
+    console.error("[api/external] Redis connection failed, falling back to filesystem", err);
+    return null;
+  }
+}
+
 /* ── POST: receive a deposit from an external app ──────────────── */
 
 export async function POST(request: NextRequest) {
@@ -104,9 +119,14 @@ export async function POST(request: NextRequest) {
     };
 
     // Append to queue for the client to pick up
-    const queue = await readQueue(body.letter, body.code);
-    queue.push(deposit);
-    await writeQueue(body.letter, body.code, queue);
+    const redis = await getRedisSafe();
+    if (redis) {
+      await redis.rPush(redisKey(body.letter, body.code), JSON.stringify(deposit));
+    } else {
+      const queue = await readQueue(body.letter, body.code);
+      queue.push(deposit);
+      await writeQueue(body.letter, body.code, queue);
+    }
 
     return NextResponse.json(
       {
@@ -140,11 +160,28 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const queue = await readQueue(letter, code);
+    const redis = await getRedisSafe();
+    let queue: QueuedDeposit[] = [];
 
-    // Clear the queue after reading
-    if (queue.length > 0) {
-      await writeQueue(letter, code, []);
+    if (redis) {
+      const rawEntries = await redis.lRange(redisKey(letter, code), 0, -1);
+      queue = rawEntries
+        .map((entry) => {
+          try {
+            return JSON.parse(entry) as QueuedDeposit;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean) as QueuedDeposit[];
+      if (queue.length > 0) {
+        await redis.del(redisKey(letter, code));
+      }
+    } else {
+      queue = await readQueue(letter, code);
+      if (queue.length > 0) {
+        await writeQueue(letter, code, []);
+      }
     }
 
     return NextResponse.json(
