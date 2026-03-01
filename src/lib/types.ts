@@ -113,3 +113,35 @@ export interface BillsContextValue {
   removeBill: (id: string) => void;
   togglePaid: (id: string) => void;
 }
+
+/* ── Synced Accounts (from Trading Journal) ───────────────────── */
+
+/** Financial account synced from the Trading Journal desktop app. */
+export interface SyncedFinancialAccount {
+  id: string;
+  name: string;
+  type: string;
+  balance: number;
+  transfers?: { id: string; accountId: string; amount: number; date: string; note?: string }[];
+}
+
+/** Trading account synced from the Trading Journal desktop app. */
+export interface SyncedTradingAccount {
+  id: string;
+  name: string;
+  startingBalance: number;
+  broker: string;
+}
+
+/** Full account sync payload sent by the Trading Journal on open. */
+export interface AccountSyncData {
+  financialAccounts: SyncedFinancialAccount[];
+  tradingAccounts: SyncedTradingAccount[];
+  syncedAt: string;
+}
+
+export interface AccountSyncContextValue {
+  accountSync: AccountSyncData | null;
+  setAccountSync: (data: AccountSyncData | null) => void;
+  lastSyncedAt: string | null;
+}

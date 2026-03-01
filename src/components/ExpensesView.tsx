@@ -23,10 +23,15 @@ import {
   RefreshCw,
   TrendingDown,
   Receipt,
+  CreditCard,
+  Wallet,
+  Building2,
+  ArrowRightLeft,
+  Clock,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { useSpending, useBills, useGoals } from "@/lib/store";
-import { BillFrequency, Bill } from "@/lib/types";
+import { useSpending, useBills, useGoals, useAccountSync } from "@/lib/store";
+import { BillFrequency, Bill, SyncedFinancialAccount } from "@/lib/types";
 
 /* ── Constants ─────────────────────────────────────────────────── */
 
@@ -50,7 +55,7 @@ const BILL_CATEGORIES = [
 ];
 
 type TimePeriod = "week" | "month" | "year" | "all";
-type Section = "discretionary" | "bills";
+type Section = "discretionary" | "bills" | "accounts";
 
 const PIE_COLORS = {
   Goals: "#a855f7",
@@ -64,6 +69,7 @@ export default function ExpensesView() {
   const { entries, addEntry, removeEntry } = useSpending();
   const { bills, billPayments, addBill, removeBill, togglePaid } = useBills();
   const { goalDeposits } = useGoals();
+  const { accountSync, lastSyncedAt } = useAccountSync();
 
   const [section, setSection] = useState<Section>("discretionary");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("month");
@@ -312,12 +318,13 @@ export default function ExpensesView() {
         </motion.div>
       )}
 
-      {/* ── Section toggle: Discretionary / Bills ───────────── */}
+      {/* ── Section toggle: Discretionary / Bills / Accounts ── */}
       <div className="flex items-center bg-surface/60 rounded-xl p-1 mb-4 max-w-md mx-auto relative">
         {(
           [
             { id: "discretionary" as Section, label: "Discretionary", icon: TrendingDown, color: "#38bdf8" },
             { id: "bills" as Section, label: "Bills", icon: Receipt, color: "#22c55e" },
+            { id: "accounts" as Section, label: "Accounts", icon: CreditCard, color: "#f59e0b" },
           ] as const
         ).map((tab) => {
           const Icon = tab.icon;
@@ -532,6 +539,119 @@ export default function ExpensesView() {
       )}
 
       {/* ═══════════════════════════════════════════════════════
+       *  ACCOUNTS / CREDIT SECTION (synced from Trading Journal)
+       * ═══════════════════════════════════════════════════════ */}
+      {section === "accounts" && (
+        <motion.div
+          key="accounts"
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -20 }}
+        >
+          {/* Sync status banner */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-surface/60 rounded-2xl p-4 border border-amber-500/10 mb-4"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center"
+                style={{ backgroundColor: "rgba(245,158,11,0.15)" }}
+              >
+                <ArrowRightLeft className="w-4 h-4" style={{ color: "#f59e0b" }} />
+              </div>
+              <div className="flex-1">
+                <p className="text-xs font-medium text-foreground">Synced from Trading Journal</p>
+                {lastSyncedAt ? (
+                  <p className="text-[10px] text-muted flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5" />
+                    Last sync: {new Date(lastSyncedAt).toLocaleString()}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-muted">Not yet synced — open the Trading Journal app</p>
+                )}
+              </div>
+            </div>
+          </motion.div>
+
+          {!accountSync || accountSync.financialAccounts.length === 0 ? (
+            <div className="text-center py-12">
+              <CreditCard className="w-10 h-10 text-muted mx-auto mb-3 opacity-40" />
+              <p className="text-sm text-muted">No accounts synced yet.</p>
+              <p className="text-xs text-muted/60 mt-1">
+                Open the Trading Journal desktop app to sync your financial accounts.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Net Worth Summary */}
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-surface/60 rounded-2xl p-5 border border-white/5 mb-4"
+              >
+                <p className="text-xs text-muted uppercase tracking-wider mb-1">Total Balance</p>
+                <p className="text-3xl font-bold font-mono" style={{ color: "#f59e0b" }}>
+                  ${accountSync.financialAccounts
+                    .reduce((sum, a) => sum + a.balance, 0)
+                    .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-muted mt-1">
+                  {accountSync.financialAccounts.length} account(s)
+                  {accountSync.tradingAccounts.length > 0
+                    ? ` · ${accountSync.tradingAccounts.length} trading account(s)`
+                    : ""}
+                </p>
+              </motion.div>
+
+              {/* Financial accounts list */}
+              <h3 className="text-xs uppercase tracking-widest text-muted mb-3">Financial Accounts</h3>
+              <div className="space-y-2 mb-6">
+                {accountSync.financialAccounts.map((acct) => (
+                  <AccountCard key={acct.id} account={acct} />
+                ))}
+              </div>
+
+              {/* Trading accounts, if any */}
+              {accountSync.tradingAccounts.length > 0 && (
+                <>
+                  <h3 className="text-xs uppercase tracking-widest text-muted mb-3">Trading Accounts</h3>
+                  <div className="space-y-2">
+                    {accountSync.tradingAccounts.map((acct) => (
+                      <motion.div
+                        key={acct.id}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex items-center gap-3 bg-surface/30 rounded-xl px-4 py-3 border border-white/5"
+                      >
+                        <div
+                          className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                          style={{ backgroundColor: "rgba(168,85,247,0.15)" }}
+                        >
+                          <Building2 className="w-4 h-4" style={{ color: "#a855f7" }} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{acct.name}</p>
+                          <p className="text-[10px] text-muted">{acct.broker}</p>
+                        </div>
+                        <span className="text-sm font-mono" style={{ color: "#a855f7" }}>
+                          ${acct.startingBalance.toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                      </motion.div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </motion.div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════
        *  ADD SPENDING MODAL
        * ═══════════════════════════════════════════════════════ */}
       <AnimatePresence>
@@ -726,4 +846,49 @@ function getOrdinal(n: number): string {
   const s = ["th", "st", "nd", "rd"];
   const v = n % 100;
   return s[(v - 20) % 10] || s[v] || s[0];
+}
+
+/* ── AccountCard sub-component ─────────────────────────────────── */
+const ACCOUNT_TYPE_ICON: Record<string, { icon: typeof Wallet; bg: string; fg: string }> = {
+  credit: { icon: CreditCard, bg: "rgba(239,68,68,0.15)", fg: "#ef4444" },
+  "credit card": { icon: CreditCard, bg: "rgba(239,68,68,0.15)", fg: "#ef4444" },
+  savings: { icon: Wallet, bg: "rgba(34,197,94,0.15)", fg: "#22c55e" },
+  chequing: { icon: Building2, bg: "rgba(56,189,248,0.15)", fg: "#38bdf8" },
+  checking: { icon: Building2, bg: "rgba(56,189,248,0.15)", fg: "#38bdf8" },
+};
+
+function AccountCard({ account }: { account: SyncedFinancialAccount }) {
+  const typeLower = account.type.toLowerCase();
+  const meta = ACCOUNT_TYPE_ICON[typeLower] || { icon: Wallet, bg: "rgba(245,158,11,0.15)", fg: "#f59e0b" };
+  const Icon = meta.icon;
+  const isCredit = typeLower.includes("credit");
+  const displayBalance = isCredit ? -account.balance : account.balance;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex items-center gap-3 bg-surface/30 rounded-xl px-4 py-3 border border-white/5"
+    >
+      <div
+        className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+        style={{ backgroundColor: meta.bg }}
+      >
+        <Icon className="w-4 h-4" style={{ color: meta.fg }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{account.name}</p>
+        <p className="text-[10px] text-muted capitalize">{account.type}</p>
+      </div>
+      <span
+        className="text-sm font-mono shrink-0"
+        style={{ color: displayBalance < 0 ? "#ef4444" : meta.fg }}
+      >
+        {displayBalance < 0 ? "-" : ""}${Math.abs(displayBalance).toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}
+      </span>
+    </motion.div>
+  );
 }

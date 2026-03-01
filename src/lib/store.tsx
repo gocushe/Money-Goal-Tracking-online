@@ -30,6 +30,8 @@ import {
   UnallocatedFundsContextValue,
   LetterRoute,
   AuthSession,
+  AccountSyncData,
+  AccountSyncContextValue,
 } from "@/lib/types";
 
 /* ── Storage helpers ───────────────────────────────────────────── */
@@ -555,5 +557,64 @@ export function UnallocatedFundsProvider({
 export function useUnallocatedFunds(): UnallocatedFundsContextValue {
   const ctx = useContext(UnallocatedFundsContext);
   if (!ctx) throw new Error("useUnallocatedFunds() must be used within an <UnallocatedFundsProvider>");
+  return ctx;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  ACCOUNT SYNC PROVIDER  (Financial & Trading accounts from Journal)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+const AccountSyncContext = createContext<AccountSyncContextValue | undefined>(undefined);
+
+export function AccountSyncProvider({
+  session,
+  children,
+}: {
+  session: AuthSession;
+  children: React.ReactNode;
+}) {
+  const key = storageKey("money-goals-account-sync", session);
+
+  const [accountSync, setAccountSyncRaw] = useState<AccountSyncData | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const isFirst = useRef(true);
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; return; }
+    if (accountSync) {
+      localStorage.setItem(key, JSON.stringify(accountSync));
+    } else {
+      localStorage.removeItem(key);
+    }
+  }, [accountSync, key]);
+
+  const setAccountSync = useCallback((data: AccountSyncData | null) => {
+    setAccountSyncRaw(data);
+  }, []);
+
+  const lastSyncedAt = accountSync?.syncedAt ?? null;
+
+  const value = useMemo<AccountSyncContextValue>(
+    () => ({ accountSync, setAccountSync, lastSyncedAt }),
+    [accountSync, setAccountSync, lastSyncedAt]
+  );
+
+  return (
+    <AccountSyncContext.Provider value={value}>
+      {children}
+    </AccountSyncContext.Provider>
+  );
+}
+
+export function useAccountSync(): AccountSyncContextValue {
+  const ctx = useContext(AccountSyncContext);
+  if (!ctx) throw new Error("useAccountSync() must be used within an <AccountSyncProvider>");
   return ctx;
 }

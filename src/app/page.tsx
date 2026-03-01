@@ -12,7 +12,7 @@ import React, { useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import PinScreen from "@/components/PinScreen";
 import AppShell from "@/components/AppShell";
-import { GoalsProvider, SpendingProvider, BillsProvider, UnallocatedFundsProvider } from "@/lib/store";
+import { GoalsProvider, SpendingProvider, BillsProvider, UnallocatedFundsProvider, AccountSyncProvider } from "@/lib/store";
 import { AuthSession } from "@/lib/types";
 
 export default function Home() {
@@ -31,7 +31,9 @@ export default function Home() {
             <SpendingProvider session={session}>
               <BillsProvider session={session}>
                 <UnallocatedFundsProvider session={session}>
-                  <AppShell session={session} onLogout={() => setSession(null)} />
+                  <AccountSyncProvider session={session}>
+                    <AppShell session={session} onLogout={() => setSession(null)} />
+                  </AccountSyncProvider>
                 </UnallocatedFundsProvider>
               </BillsProvider>
             </SpendingProvider>

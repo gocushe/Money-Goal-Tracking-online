@@ -1,5 +1,5 @@
 /**
- * useExternalSync.ts  –  Client-side polling for external deposits
+ * useExternalSync.ts  –  Client-side polling for external deposits & account sync
  * ------------------------------------------------------------------
  * Polls /api/external?letter=X&code=XXXX every 30 seconds to pick up
  * new deposits pushed from the Trading Journal (or any external source).
@@ -7,13 +7,16 @@
  * Deposits are added to the UnallocatedFunds context — they sit in a
  * visible "holding area" until the user manually allocates them to
  * goals, expenses, or bills.
+ *
+ * Also picks up account-sync data (financial & trading accounts) and
+ * stores it in the AccountSync context.
  */
 
 "use client";
 
 import { useEffect, useCallback, useRef } from "react";
-import { useUnallocatedFunds } from "@/lib/store";
-import { AuthSession } from "@/lib/types";
+import { useUnallocatedFunds, useAccountSync } from "@/lib/store";
+import { AuthSession, AccountSyncData } from "@/lib/types";
 
 const POLL_INTERVAL = 30_000; // 30 seconds
 
@@ -29,11 +32,17 @@ interface QueuedDeposit {
 
 export function useExternalSync(session: AuthSession) {
   const { addDeposit } = useUnallocatedFunds();
+  const { setAccountSync } = useAccountSync();
   const addDepositRef = useRef(addDeposit);
+  const setAccountSyncRef = useRef(setAccountSync);
 
   useEffect(() => {
     addDepositRef.current = addDeposit;
   }, [addDeposit]);
+
+  useEffect(() => {
+    setAccountSyncRef.current = setAccountSync;
+  }, [setAccountSync]);
 
   const processDeposits = useCallback((deposits: QueuedDeposit[]) => {
     for (const dep of deposits) {
@@ -60,6 +69,10 @@ export function useExternalSync(session: AuthSession) {
         const data = await res.json();
         if (data.success && data.deposits && data.deposits.length > 0) {
           processDeposits(data.deposits);
+        }
+        // Process account sync data
+        if (data.accountSync) {
+          setAccountSyncRef.current(data.accountSync as AccountSyncData);
         }
       } catch {
         // Silently ignore network errors on polling

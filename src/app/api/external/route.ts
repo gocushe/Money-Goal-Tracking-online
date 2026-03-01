@@ -1,9 +1,12 @@
 /**
  * POST /api/external
  * ────────────────────
- * Receives payout deposits from external apps (e.g. Trading Journal V.1.13).
+ * Receives payout deposits from external apps (e.g. Trading Journal V.1.15).
  * Money lands as an "unallocated deposit" — it sits in a holding area until
  * the user manually allocates it to goals, expenses, or bills on the website.
+ *
+ * Also handles account sync data when the `accountSync` field is present —
+ * financial account balances are stored for display in the Accounts/Credit tab.
  *
  * ─── Authentication ───
  * Requires `letter` + `code` in the request body to identify the account.
@@ -15,7 +18,8 @@
  *   "amountCAD": 1400.00,
  *   "amountUSD": 1000.00,
  *   "note": "Payout from Tradovate",
- *   "date": "2025-01-15"
+ *   "date": "2025-01-15",
+ *   "accountSync": { ... }   // optional — financial account data
  * }
  *
  * ─── Response ───
@@ -23,6 +27,7 @@
  *
  * GET /api/external?letter=X&code=XXXX
  * ─── Fetches and clears pending deposits from the server-side queue ───
+ * Also returns synced account data if present.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -84,6 +89,28 @@ async function getRedisSafe() {
   }
 }
 
+/* ── Account sync storage (file-based, alongside queue) ────────── */
+
+const ACCOUNTS_FILE_PREFIX = "accounts-sync";
+
+function accountsFile(letter: string, code: string) {
+  return path.join(QUEUE_DIR, `${ACCOUNTS_FILE_PREFIX}-${letter}-${code}.json`);
+}
+
+async function readAccountSync(letter: string, code: string) {
+  try {
+    const data = await fs.readFile(accountsFile(letter, code), "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function writeAccountSync(letter: string, code: string, data: unknown) {
+  await ensureQueueDir();
+  await fs.writeFile(accountsFile(letter, code), JSON.stringify(data, null, 2));
+}
+
 /* ── POST: receive a deposit from an external app ──────────────── */
 
 export async function POST(request: NextRequest) {
@@ -96,6 +123,19 @@ export async function POST(request: NextRequest) {
         { success: false, error: "Missing letter or code" },
         { status: 400 }
       );
+    }
+
+    /* ── Handle account sync data (sent with note === "__ACCOUNT_SYNC__") ── */
+    if (body.accountSync) {
+      await writeAccountSync(body.letter, body.code, body.accountSync);
+
+      // If this is a pure account sync (no real deposit), return early
+      if (body.note === "__ACCOUNT_SYNC__") {
+        return NextResponse.json(
+          { success: true, accountsSynced: true, message: "Account data synced" },
+          { status: 200 }
+        );
+      }
     }
 
     const amountCAD = parseFloat(body.amountCAD) || 0;
@@ -184,11 +224,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    /* Also fetch synced account data (non-destructive — we read but don't clear) */
+    const accountData = await readAccountSync(letter, code);
+
     return NextResponse.json(
       {
         success: true,
         deposits: queue,
         count: queue.length,
+        accountSync: accountData || null,
       },
       { status: 200 }
     );
