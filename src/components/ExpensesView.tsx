@@ -30,7 +30,7 @@ import {
   Clock,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { useSpending, useBills, useGoals, useAccountSync, useCategories } from "@/lib/store";
+import { useSpending, useBills, useGoals, useAccountSync, useCategories, useUnallocatedFunds } from "@/lib/store";
 import { BillFrequency, Bill, SyncedFinancialAccount, SyncedCategory } from "@/lib/types";
 
 /* ── Constants ─────────────────────────────────────────────────── */
@@ -69,8 +69,9 @@ export default function ExpensesView() {
   const { entries, addEntry, removeEntry } = useSpending();
   const { bills, billPayments, addBill, removeBill, togglePaid } = useBills();
   const { goalDeposits } = useGoals();
-  const { accountSync, lastSyncedAt } = useAccountSync();
+  const { accountSync, setAccountSync, lastSyncedAt } = useAccountSync();
   const { categories: syncedCategories } = useCategories();
+  const { deposits, totalUnallocated, allocateDeposit } = useUnallocatedFunds();
 
   /** Find emoji & color for a category name from synced categories */
   const getCategoryInfo = useCallback((catName: string): { emoji: string; color: string } => {
@@ -97,6 +98,11 @@ export default function ExpensesView() {
   const [billFrequency, setBillFrequency] = useState<BillFrequency>("monthly");
   const [billCategory, setBillCategory] = useState("Utilities");
   const [billChargeToAccountId, setBillChargeToAccountId] = useState("");
+
+  /* ── Account allocation form state ───────────────────────────── */
+  const [showAllocateModal, setShowAllocateModal] = useState(false);
+  const [allocateAccount, setAllocateAccount] = useState<SyncedFinancialAccount | null>(null);
+  const [allocateAmount, setAllocateAmount] = useState("");
 
   /* ── Credit card accounts for bill charge dropdown ──────────── */
   const creditAccounts = useMemo(() => {
@@ -247,6 +253,66 @@ export default function ExpensesView() {
     setBillChargeToAccountId("");
     setShowBillForm(false);
   }, [billName, billAmount, billDueDay, billFrequency, billCategory, billChargeToAccountId, addBill]);
+
+  /** Allocate funds from unallocated deposits to a financial account.
+   *  For credit/debt accounts: reduces the debt (balance goes down)
+   *  For savings/investment: increases the balance
+   */
+  const handleAllocateToAccount = useCallback(() => {
+    if (!allocateAccount || !accountSync) return;
+    const amt = parseFloat(allocateAmount);
+    if (!amt || amt <= 0 || amt > totalUnallocated) return;
+
+    // Deduct from unallocated deposits (FIFO)
+    let remaining = amt;
+    for (const dep of deposits) {
+      if (remaining <= 0) break;
+      const take = Math.min(remaining, dep.amountCAD);
+      allocateDeposit(dep.id, take);
+      remaining -= take;
+    }
+
+    // Update account balance locally
+    const typeLower = allocateAccount.type.toLowerCase();
+    const isDebt = typeLower.includes("credit") || typeLower.includes("mortgage") || typeLower.includes("loan");
+
+    const updatedAccounts = accountSync.financialAccounts.map((a) => {
+      if (a.id !== allocateAccount.id) return a;
+      // For debt accounts: payment reduces the balance (debt)
+      // For savings: deposit increases the balance
+      const newBalance = isDebt ? a.balance - amt : a.balance + amt;
+      const newTransfer = {
+        id: crypto.randomUUID(),
+        accountId: a.id,
+        amount: amt,
+        date: new Date().toISOString().split("T")[0],
+        note: `Allocated from Money Goals website`,
+      };
+      return {
+        ...a,
+        balance: newBalance,
+        totalTransferred: (a.totalTransferred || 0) + amt,
+        transfers: [...(a.transfers || []), newTransfer],
+      };
+    });
+
+    setAccountSync({
+      ...accountSync,
+      financialAccounts: updatedAccounts,
+      syncedAt: new Date().toISOString(),
+    });
+
+    setAllocateAmount("");
+    setAllocateAccount(null);
+    setShowAllocateModal(false);
+  }, [allocateAccount, allocateAmount, accountSync, totalUnallocated, deposits, allocateDeposit, setAccountSync]);
+
+  /** Open allocation modal for a specific account */
+  const openAllocateModal = useCallback((account: SyncedFinancialAccount) => {
+    setAllocateAccount(account);
+    setAllocateAmount("");
+    setShowAllocateModal(true);
+  }, []);
 
   return (
     <div className="px-4 pb-28">
@@ -639,7 +705,13 @@ export default function ExpensesView() {
                 <p className="text-xs text-muted uppercase tracking-wider mb-1">Total Balance</p>
                 <p className="text-3xl font-bold font-mono" style={{ color: "#f59e0b" }}>
                   ${accountSync.financialAccounts
-                    .reduce((sum, a) => sum + a.balance, 0)
+                    .reduce((sum, a) => {
+                      const typeLower = a.type.toLowerCase();
+                      const isDebt = typeLower.includes("credit") || typeLower.includes("mortgage") || typeLower.includes("loan");
+                      // For debt accounts, subtract the balance (they owe money)
+                      // For savings/investment, add the balance (they have money)
+                      return isDebt ? sum - a.balance : sum + a.balance;
+                    }, 0)
                     .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
                 <p className="text-xs text-muted mt-1">
@@ -649,9 +721,21 @@ export default function ExpensesView() {
 
               {/* Financial accounts list */}
               <h3 className="text-xs uppercase tracking-widest text-muted mb-3">Financial Accounts</h3>
+              {totalUnallocated > 0 && (
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-3 flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-amber-400" />
+                  <span className="text-xs text-amber-300">
+                    ${totalUnallocated.toFixed(2)} unallocated — tap an account to allocate
+                  </span>
+                </div>
+              )}
               <div className="space-y-2 mb-6">
                 {accountSync.financialAccounts.map((acct) => (
-                  <AccountCard key={acct.id} account={acct} />
+                  <AccountCard
+                    key={acct.id}
+                    account={acct}
+                    onAllocate={totalUnallocated > 0 ? () => openAllocateModal(acct) : undefined}
+                  />
                 ))}
               </div>
             </>
@@ -912,6 +996,77 @@ export default function ExpensesView() {
           </>
         )}
       </AnimatePresence>
+
+      {/* ═══════════════════════════════════════════════════════
+       *  ALLOCATE TO ACCOUNT MODAL
+       * ═══════════════════════════════════════════════════════ */}
+      <AnimatePresence>
+        {showAllocateModal && allocateAccount && (
+          <>
+            <motion.div
+              key="allocate-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowAllocateModal(false)}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              key="allocate-modal"
+              initial={{ opacity: 0, y: 50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 50 }}
+              className="fixed inset-x-4 bottom-8 z-50 max-w-sm mx-auto bg-surface rounded-2xl p-5 border border-amber-500/20"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-amber-400">
+                  {allocateAccount.type.toLowerCase().includes("credit") ||
+                   allocateAccount.type.toLowerCase().includes("mortgage") ||
+                   allocateAccount.type.toLowerCase().includes("loan")
+                    ? `Pay ${allocateAccount.name}`
+                    : `Add to ${allocateAccount.name}`}
+                </h3>
+                <button onClick={() => setShowAllocateModal(false)} className="text-muted hover:text-foreground">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="bg-background/40 rounded-xl p-3">
+                  <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Available to Allocate</p>
+                  <p className="text-lg font-bold font-mono text-amber-400">
+                    ${totalUnallocated.toFixed(2)}
+                  </p>
+                </div>
+
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="Amount ($)"
+                  value={allocateAmount}
+                  onChange={(e) => setAllocateAmount(e.target.value)}
+                  className="w-full bg-background/60 rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted outline-none border border-white/5 focus:border-amber-400/40 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleAllocateToAccount}
+                  disabled={!allocateAmount || parseFloat(allocateAmount) <= 0 || parseFloat(allocateAmount) > totalUnallocated}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+                >
+                  <ArrowRightLeft className="w-4 h-4" />
+                  {allocateAccount.type.toLowerCase().includes("credit") ||
+                   allocateAccount.type.toLowerCase().includes("mortgage") ||
+                   allocateAccount.type.toLowerCase().includes("loan")
+                    ? "Make Payment"
+                    : "Add Funds"}
+                </motion.button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -930,14 +1085,17 @@ const ACCOUNT_TYPE_ICON: Record<string, { icon: typeof Wallet; bg: string; fg: s
   savings: { icon: Wallet, bg: "rgba(34,197,94,0.15)", fg: "#22c55e" },
   chequing: { icon: Building2, bg: "rgba(56,189,248,0.15)", fg: "#38bdf8" },
   checking: { icon: Building2, bg: "rgba(56,189,248,0.15)", fg: "#38bdf8" },
+  mortgage: { icon: Building2, bg: "rgba(245,158,11,0.15)", fg: "#f59e0b" },
+  loan: { icon: CreditCard, bg: "rgba(239,68,68,0.15)", fg: "#ef4444" },
+  investment: { icon: Wallet, bg: "rgba(139,92,246,0.15)", fg: "#8b5cf6" },
 };
 
-function AccountCard({ account }: { account: SyncedFinancialAccount }) {
+function AccountCard({ account, onAllocate }: { account: SyncedFinancialAccount; onAllocate?: () => void }) {
   const typeLower = account.type.toLowerCase();
   const meta = ACCOUNT_TYPE_ICON[typeLower] || { icon: Wallet, bg: "rgba(245,158,11,0.15)", fg: "#f59e0b" };
   const Icon = meta.icon;
-  const isCredit = typeLower.includes("credit");
-  const displayBalance = isCredit ? -account.balance : account.balance;
+  const isDebt = typeLower.includes("credit") || typeLower.includes("mortgage") || typeLower.includes("loan");
+  const displayBalance = isDebt ? -account.balance : account.balance;
 
   return (
     <motion.div
@@ -955,6 +1113,14 @@ function AccountCard({ account }: { account: SyncedFinancialAccount }) {
         <p className="text-sm font-medium truncate">{account.name}</p>
         <p className="text-[10px] text-muted capitalize">{account.type}</p>
       </div>
+      {onAllocate && (
+        <button
+          onClick={onAllocate}
+          className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors shrink-0"
+        >
+          {isDebt ? "Pay" : "Add"}
+        </button>
+      )}
       <span
         className="text-sm font-mono shrink-0"
         style={{ color: displayBalance < 0 ? "#ef4444" : meta.fg }}
