@@ -12,13 +12,12 @@ import { Menu, Wallet, Plus, X, DollarSign } from "lucide-react";
 import { useGoals, useUnallocatedFunds } from "@/lib/store";
 import GoalNode from "@/components/GoalNode";
 import SideGoalNode from "@/components/SideGoalNode";
-import FundingInbox from "@/components/FundingInbox";
 import SettingsView from "@/components/SettingsView";
 import { AuthSession, Goal } from "@/lib/types";
 import { useExternalSync } from "@/lib/useExternalSync";
 
 /* ── Constants ─────────────────────────────────────────────────── */
-const NODE_GAP = 28;
+const NODE_GAP = 20;
 const HIGHLIGHT_DURATION = 3000;
 const SEGMENT_ANIM_DURATION = 0.65;
 const SEGMENT_STAGGER = 0.45;
@@ -42,6 +41,64 @@ export default function MainView({ session, onLogout }: MainViewProps) {
   const [flowRange, setFlowRange] = useState<{ minIdx: number; maxIdx: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  /* ── Show-once logic for unallocated funds ──────────────── */
+  const SEEN_KEY = `money-goals-seen-unallocated-${session.letter}-${session.code}`;
+  const [hasSeenUnallocated, setHasSeenUnallocated] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(SEEN_KEY) === "true";
+  });
+  const showUnallocatedBanner = deposits.length > 0 && !hasSeenUnallocated;
+
+  // Mark as seen after user has viewed the banner for 3 seconds
+  useEffect(() => {
+    if (showUnallocatedBanner) {
+      const timer = setTimeout(() => {
+        setHasSeenUnallocated(true);
+        localStorage.setItem(SEEN_KEY, "true");
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [showUnallocatedBanner, SEEN_KEY]);
+
+  // Reset "seen" flag when new deposits arrive (count changes)
+  const prevDepositCount = useRef(deposits.length);
+  useEffect(() => {
+    if (deposits.length > prevDepositCount.current) {
+      setHasSeenUnallocated(false);
+      localStorage.removeItem(SEEN_KEY);
+    }
+    prevDepositCount.current = deposits.length;
+  }, [deposits.length, SEEN_KEY]);
+
+  /* Pinch-to-zoom state */
+  const [zoomScale, setZoomScale] = useState(1);
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartScale = useRef(1);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDist.current = Math.hypot(dx, dy);
+      pinchStartScale.current = zoomScale;
+    }
+  }, [zoomScale]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchStartDist.current !== null) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const ratio = dist / pinchStartDist.current;
+      const newScale = Math.min(1.5, Math.max(0.5, pinchStartScale.current * ratio));
+      setZoomScale(newScale);
+    }
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    pinchStartDist.current = null;
+  }, []);
+
   /* Side goal add modal */
   const [sideGoalModal, setSideGoalModal] = useState<{ goalId: string } | null>(null);
   const [sgTitle, setSgTitle] = useState("");
@@ -56,7 +113,6 @@ export default function MainView({ session, onLogout }: MainViewProps) {
     [goals]
   );
 
-  const handleFundsAdded = useCallback(
   const handleFundsAdded = useCallback(
     (_amount: number, allocation: Record<string, number>) => {
       const fundedIds = new Set(Object.keys(allocation));
@@ -148,14 +204,22 @@ export default function MainView({ session, onLogout }: MainViewProps) {
     <>
       {/* ── Top bar ─────────────────────────────────────────── */}
       <header className="fixed top-[88px] inset-x-0 z-30 flex items-center justify-between px-5 pt-3 pb-3 bg-gradient-to-b from-background via-background/90 to-transparent">
-        <motion.button
-          whileTap={{ scale: 0.85 }}
-          onClick={() => setSettingsOpen(true)}
-          className="p-2.5 rounded-xl bg-surface/60 backdrop-blur border border-white/5 text-muted hover:text-foreground transition-colors"
-          aria-label="Open settings"
-        >
-          <Menu className="w-5 h-5" />
-        </motion.button>
+        <div className="relative">
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            onClick={() => setSettingsOpen(true)}
+            className="p-2.5 rounded-xl bg-surface/60 backdrop-blur border border-white/5 text-muted hover:text-foreground transition-colors"
+            aria-label="Open settings"
+          >
+            <Menu className="w-5 h-5" />
+          </motion.button>
+          {/* Badge when unallocated funds are waiting in settings */}
+          {deposits.length > 0 && hasSeenUnallocated && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-[9px] font-bold text-black flex items-center justify-center">
+              {deposits.length}
+            </span>
+          )}
+        </div>
 
         <motion.div
           initial={{ opacity: 0, y: -8 }}
@@ -172,14 +236,49 @@ export default function MainView({ session, onLogout }: MainViewProps) {
         </motion.div>
       </header>
 
-      {/* ── Funding Inbox (unallocated deposits from Trading Journal) */}
-      <div className="fixed top-[140px] inset-x-0 z-20">
-        <FundingInbox />
-      </div>
+      {/* ── One-time unallocated funds notification ────────── */}
+      <AnimatePresence>
+        {showUnallocatedBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-[140px] inset-x-4 z-20"
+          >
+            <button
+              onClick={() => {
+                setHasSeenUnallocated(true);
+                localStorage.setItem(SEEN_KEY, "true");
+                setSettingsOpen(true);
+              }}
+              className="w-full flex items-center gap-3 p-3 rounded-xl bg-gradient-to-r from-amber-500/15 via-orange-500/15 to-amber-500/15 border border-amber-500/25 text-left"
+            >
+              <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center shrink-0">
+                <Wallet className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-amber-300">
+                  CA${totalUnallocated.toLocaleString("en-US", { minimumFractionDigits: 2 })} unallocated
+                </p>
+                <p className="text-[10px] text-amber-400/70">Tap to allocate in Settings</p>
+              </div>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* ── Scrollable goal visualization ───────────────────── */}
-      <div ref={scrollRef} className="fixed inset-0 pt-[140px] pb-28 overflow-y-auto">
-        <div className="min-h-full flex flex-col-reverse items-center justify-start px-4 py-8 gap-0">
+      {/* ── Scrollable goal visualization with pinch-to-zoom ── */}
+      <div
+        ref={scrollRef}
+        className="fixed inset-0 pt-[140px] pb-8 overflow-y-auto"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        <div
+          className="min-h-full flex flex-col-reverse items-center justify-start px-4 py-8 gap-0 origin-center"
+          style={{ transform: `scale(${zoomScale})`, transformOrigin: 'center top' }}
+        >
           {sortedGoals.map((goal, index) => {
             const pipeActive =
               flowRange !== null && index >= flowRange.minIdx && index < flowRange.maxIdx;
@@ -200,7 +299,7 @@ export default function MainView({ session, onLogout }: MainViewProps) {
                 {/* Goal node with side goals */}
                 <div className="flex items-center gap-4">
                   {/* Left side goals */}
-                  <div className="flex flex-col gap-2 items-end min-w-[120px]">
+                  <div className="flex flex-col gap-1 items-end min-w-[90px]">
                     {(goal.sideGoals || [])
                       .filter((_, i) => i % 2 === 0)
                       .map((sg) => (
@@ -215,17 +314,17 @@ export default function MainView({ session, onLogout }: MainViewProps) {
                     <motion.button
                       whileTap={{ scale: 0.85 }}
                       onClick={() => setSideGoalModal({ goalId: goal.id })}
-                      className="absolute -right-3 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full
+                      className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full
                                  bg-yellow-500/20 border border-yellow-500/40 text-yellow-400
                                  flex items-center justify-center hover:bg-yellow-500/30 transition-colors"
                       title="Add side goal"
                     >
-                      <Plus className="w-3.5 h-3.5" />
+                      <Plus className="w-3 h-3" />
                     </motion.button>
                   </div>
 
                   {/* Right side goals */}
-                  <div className="flex flex-col gap-2 items-start min-w-[120px]">
+                  <div className="flex flex-col gap-1 items-start min-w-[90px]">
                     {(goal.sideGoals || [])
                       .filter((_, i) => i % 2 === 1)
                       .map((sg) => (

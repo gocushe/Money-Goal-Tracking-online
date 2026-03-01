@@ -34,12 +34,13 @@ import { Goal } from "@/lib/types";
  * Original: RADIUS=52, SVG_SIZE=140, STROKE_WIDTH=5
  * Doubled:  RADIUS=104, SVG_SIZE=280, STROKE_WIDTH=8
  * Reduced 20%: RADIUS=83, SVG_SIZE=224, STROKE_WIDTH=6
+ * Reduced another 20%: RADIUS=66, SVG_SIZE=180, STROKE_WIDTH=5
  */
-const RADIUS = 83;
+const RADIUS = 66;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-const SVG_SIZE = 224;
+const SVG_SIZE = 180;
 const CENTER = SVG_SIZE / 2;
-const STROKE_WIDTH = 6;
+const STROKE_WIDTH = 5;
 
 /* ── Component ─────────────────────────────────────────────────── */
 
@@ -144,19 +145,19 @@ export default function GoalNode({ goal, index, highlight, onClick }: GoalNodePr
 
         {/* ── Inner content (amount + title) rendered on top of SVG ── */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          {/* Target amount — scaled down 20% (was 2rem, now 1.6rem) */}
-          <span className="text-[1.6rem] font-semibold text-foreground leading-tight">
+          {/* Target amount — reduced to 1.3rem */}
+          <span className="text-[1.3rem] font-semibold text-foreground leading-tight">
             {formatAmount(goal.targetAmount)}
           </span>
 
-          {/* Goal title — scaled down 20% (was 20px, now 16px) */}
-          <span className="text-[16px] text-muted mt-1 max-w-[144px] truncate text-center">
+          {/* Goal title — reduced to 13px */}
+          <span className="text-[13px] text-muted mt-1 max-w-[115px] truncate text-center">
             {goal.title}
           </span>
 
-          {/* Progress percentage — scaled down 20% (was 13px, now 11px) */}
+          {/* Progress percentage — reduced to 9px */}
           <span
-            className={`text-[11px] mt-1 font-mono ${
+            className={`text-[9px] mt-1 font-mono ${
               isComplete ? "text-accent" : "text-accent-soft"
             }`}
           >

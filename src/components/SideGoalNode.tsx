@@ -12,17 +12,17 @@ import { motion } from "framer-motion";
 import { Trash2, Plus, DollarSign } from "lucide-react";
 import { SideGoal } from "@/lib/types";
 
-const RADIUS = 40;
+const RADIUS = 32;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-const SVG_SIZE = 100;
+const SVG_SIZE = 80;
 const CENTER = SVG_SIZE / 2;
-const STROKE_WIDTH = 4;
+const STROKE_WIDTH = 3;
 
-const SMALL_RADIUS = 26;
+const SMALL_RADIUS = 21;
 const SMALL_CIRCUMFERENCE = 2 * Math.PI * SMALL_RADIUS;
-const SMALL_SVG_SIZE = 64;
+const SMALL_SVG_SIZE = 52;
 const SMALL_CENTER = SMALL_SVG_SIZE / 2;
-const SMALL_STROKE_WIDTH = 3;
+const SMALL_STROKE_WIDTH = 2;
 
 interface SideGoalNodeProps {
   sideGoal: SideGoal;
@@ -105,13 +105,13 @@ export default function SideGoalNode({
         </svg>
 
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className={`${small ? "text-[10px]" : "text-[13px]"} font-semibold text-yellow-300 leading-tight`}>
+          <span className={`${small ? "text-[8px]" : "text-[11px]"} font-semibold text-yellow-300 leading-tight`}>
             {formatAmount(sideGoal.targetAmount)}
           </span>
-          <span className={`${small ? "text-[8px]" : "text-[10px]"} text-yellow-500/70 max-w-[${small ? "50" : "70"}px] truncate text-center`}>
+          <span className={`${small ? "text-[6px]" : "text-[8px]"} text-yellow-500/70 max-w-[${small ? "40" : "56"}px] truncate text-center`}>
             {sideGoal.title}
           </span>
-          <span className={`${small ? "text-[7px]" : "text-[9px]"} font-mono text-yellow-400/60`}>
+          <span className={`${small ? "text-[6px]" : "text-[7px]"} font-mono text-yellow-400/60`}>
             {Math.round(percentage * 100)}%
           </span>
         </div>

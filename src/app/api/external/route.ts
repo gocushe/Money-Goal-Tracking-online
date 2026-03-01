@@ -35,6 +35,21 @@ import { promises as fs } from "fs";
 import path from "path";
 import { getRedisClient } from "@/lib/redis";
 
+/* ── CORS helpers ──────────────────────────────────────────────── */
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+function corsJson(body: unknown, init?: { status?: number }) {
+  return NextResponse.json(body, {
+    status: init?.status ?? 200,
+    headers: CORS_HEADERS,
+  });
+}
+
 /* ── Server-side queue (file-based, works without Redis) ───────── */
 
 const TMP_QUEUE_DIR = path.join("/tmp", ".external-queue");
@@ -167,6 +182,12 @@ async function writeWebsiteSync(letter: string, code: string, data: unknown) {
   return writeSyncData("website-sync", letter, code, data);
 }
 
+/* ── OPTIONS: CORS preflight ───────────────────────────────────── */
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
 /* ── POST: receive data from an external app ───────────────────── */
 
 export async function POST(request: NextRequest) {
@@ -175,7 +196,7 @@ export async function POST(request: NextRequest) {
 
     // Validate required fields
     if (!body.letter || !body.code) {
-      return NextResponse.json(
+      return corsJson(
         { success: false, error: "Missing letter or code" },
         { status: 400 }
       );
@@ -183,7 +204,7 @@ export async function POST(request: NextRequest) {
 
     /* ── Test ping (no side effects) ─────────────────────────── */
     if (body.note === "__TEST_PING__") {
-      return NextResponse.json(
+      return corsJson(
         { success: true, message: "Connection OK" },
         { status: 200 }
       );
@@ -198,7 +219,7 @@ export async function POST(request: NextRequest) {
         goals: body.goals || [],
         syncedAt: new Date().toISOString(),
       });
-      return NextResponse.json(
+      return corsJson(
         { success: true, message: "Website data saved for app sync" },
         { status: 200 }
       );
@@ -220,7 +241,7 @@ export async function POST(request: NextRequest) {
       // Read website data for the app to pull
       const websiteData = await readWebsiteSync(body.letter, body.code);
 
-      return NextResponse.json(
+      return corsJson(
         {
           success: true,
           synced: true,
@@ -237,7 +258,7 @@ export async function POST(request: NextRequest) {
 
       // If this is a pure account sync (no real deposit), return early
       if (body.note === "__ACCOUNT_SYNC__") {
-        return NextResponse.json(
+        return corsJson(
           { success: true, accountsSynced: true, message: "Account data synced" },
           { status: 200 }
         );
@@ -248,7 +269,7 @@ export async function POST(request: NextRequest) {
     const amountUSD = parseFloat(body.amountUSD) || 0;
 
     if (amountCAD <= 0 && amountUSD <= 0) {
-      return NextResponse.json(
+      return corsJson(
         { success: false, error: "Amount must be greater than 0" },
         { status: 400 }
       );
@@ -274,7 +295,7 @@ export async function POST(request: NextRequest) {
       await writeQueue(body.letter, body.code, queue);
     }
 
-    return NextResponse.json(
+    return corsJson(
       {
         success: true,
         deposit,
@@ -284,7 +305,7 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     console.error("[api/external] POST error:", error);
-    return NextResponse.json(
+    return corsJson(
       { success: false, error: "Internal server error" },
       { status: 500 }
     );
@@ -300,7 +321,7 @@ export async function GET(request: NextRequest) {
     const code = searchParams.get("code");
 
     if (!letter || !code) {
-      return NextResponse.json(
+      return corsJson(
         { success: false, error: "Missing letter or code query params" },
         { status: 400 }
       );
@@ -334,7 +355,7 @@ export async function GET(request: NextRequest) {
     const accountData = await readAccountSync(letter, code);
     const fullSyncData = await readFullSync(letter, code);
 
-    return NextResponse.json(
+    return corsJson(
       {
         success: true,
         deposits: queue,
@@ -346,7 +367,7 @@ export async function GET(request: NextRequest) {
     );
   } catch (error) {
     console.error("[api/external] GET error:", error);
-    return NextResponse.json(
+    return corsJson(
       { success: false, error: "Internal server error" },
       { status: 500 }
     );
