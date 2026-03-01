@@ -1,21 +1,24 @@
 /**
- * SettingsView.tsx  –  Goal Management + Admin Panel
+ * SettingsView.tsx  –  Goal Management + Fund Allocation + Admin Panel
  * -----------------------------------------------------
  * Slide-over panel with:
- *  1. Add Goal form
- *  2. Reorder/delete goals (drag-and-drop)
- *  3. Admin section (only for admin accounts): manage all login routes
- *  4. Logout button
+ *  1. Unallocated Funds allocation editor
+ *  2. Add Goal form
+ *  3. Reorder/delete goals (drag-and-drop)
+ *  4. Admin section (only for admin accounts): manage all login routes
+ *  5. Logout button
  */
 
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import { motion, AnimatePresence, Reorder } from "framer-motion";
-import { X, Plus, Trash2, GripVertical, LogOut, Shield, Key } from "lucide-react";
-import { useGoals } from "@/lib/store";
+import { X, Plus, Trash2, GripVertical, LogOut, Shield, Key, Inbox, ArrowRight, Target, Receipt, CreditCard, DollarSign } from "lucide-react";
+import { useGoals, useUnallocatedFunds, useSpending, useBills } from "@/lib/store";
 import { loadRoutes, saveRoutes } from "@/lib/store";
 import { Goal, AuthSession, LetterRoute } from "@/lib/types";
+
+type AllocTarget = "goal" | "expense" | "bill";
 
 interface SettingsViewProps {
   isOpen: boolean;
@@ -25,7 +28,10 @@ interface SettingsViewProps {
 }
 
 export default function SettingsView({ isOpen, onClose, session, onLogout }: SettingsViewProps) {
-  const { goals, setGoals, addGoal, removeGoal } = useGoals();
+  const { goals, setGoals, addGoal, removeGoal, addFunds, addFundsToGoal, addFundsToSideGoal } = useGoals();
+  const { deposits, totalUnallocated, allocateDeposit, removeDeposit } = useUnallocatedFunds();
+  const { addEntry } = useSpending();
+  const { bills, togglePaid } = useBills();
 
   const [orderedGoals, setOrderedGoals] = useState<Goal[]>([]);
   useEffect(() => {
@@ -34,6 +40,80 @@ export default function SettingsView({ isOpen, onClose, session, onLogout }: Set
 
   const [newTitle, setNewTitle] = useState("");
   const [newAmount, setNewAmount] = useState("");
+
+  /* ── Allocation editor state ────────────────────────────────── */
+  const [allocDepositId, setAllocDepositId] = useState<string>("");
+  const [allocTarget, setAllocTarget] = useState<AllocTarget>("goal");
+  const [allocAmount, setAllocAmount] = useState("");
+  const [allocGoalId, setAllocGoalId] = useState("");
+  const [allocExpenseTitle, setAllocExpenseTitle] = useState("");
+  const [allocBillId, setAllocBillId] = useState("");
+  const [allocSuccess, setAllocSuccess] = useState<string | null>(null);
+
+  const goalOptions = useMemo(() => {
+    const sorted = [...goals].sort((a, b) => a.orderIndex - b.orderIndex);
+    const opts: { id: string; label: string; remaining: number; parentId?: string; isSide?: boolean }[] = [
+      { id: "auto", label: "Auto-fill (chain)", remaining: 0 },
+    ];
+    sorted.forEach((g) => {
+      const rem = g.targetAmount - g.currentAmount;
+      if (rem > 0) opts.push({ id: g.id, label: g.title, remaining: rem });
+      (g.sideGoals || []).forEach((sg) => {
+        const sgRem = sg.targetAmount - sg.currentAmount;
+        if (sgRem > 0)
+          opts.push({ id: sg.id, label: `↳ ${sg.title}`, remaining: sgRem, parentId: g.id, isSide: true });
+      });
+    });
+    return opts;
+  }, [goals]);
+
+  const unpaidBills = useMemo(() => bills.filter((b) => !b.isPaid), [bills]);
+
+  const startAllocDeposit = useCallback((depId: string, amount: number) => {
+    setAllocDepositId(depId);
+    setAllocAmount(amount.toFixed(2));
+    setAllocGoalId(goalOptions.length > 1 ? goalOptions[1].id : "auto");
+    setAllocTarget("goal");
+    setAllocExpenseTitle("");
+    setAllocBillId("");
+  }, [goalOptions]);
+
+  const confirmAllocation = useCallback(() => {
+    const amount = parseFloat(allocAmount);
+    if (!amount || amount <= 0 || !allocDepositId) return;
+
+    switch (allocTarget) {
+      case "goal": {
+        const opt = goalOptions.find((o) => o.id === allocGoalId);
+        if (allocGoalId === "auto") {
+          addFunds(amount);
+        } else if (opt?.isSide && opt.parentId) {
+          addFundsToSideGoal(opt.parentId, opt.id, amount);
+        } else {
+          addFundsToGoal(allocGoalId, amount);
+        }
+        break;
+      }
+      case "expense": {
+        addEntry({
+          title: allocExpenseTitle || "Trading Journal Payout",
+          amount,
+          date: new Date().toISOString(),
+        });
+        break;
+      }
+      case "bill": {
+        if (allocBillId) togglePaid(allocBillId);
+        break;
+      }
+    }
+
+    allocateDeposit(allocDepositId, amount);
+    setAllocSuccess(allocDepositId);
+    setTimeout(() => setAllocSuccess(null), 1500);
+    setAllocDepositId("");
+    setAllocAmount("");
+  }, [allocAmount, allocDepositId, allocTarget, allocGoalId, allocExpenseTitle, allocBillId, goalOptions, addFunds, addFundsToGoal, addFundsToSideGoal, addEntry, togglePaid, allocateDeposit]);
 
   /* ── Admin: routes management ───────────────────────────────── */
   const [routes, setRoutes] = useState<LetterRoute[]>([]);
@@ -135,6 +215,122 @@ export default function SettingsView({ isOpen, onClose, session, onLogout }: Set
 
             {/* Body */}
             <div className="flex-1 overflow-y-auto px-5 pb-32">
+
+              {/* ─── Unallocated Funds ─────────────────────────── */}
+              {deposits.length > 0 && (
+                <section className="mb-8">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Inbox className="w-4 h-4 text-amber-400" />
+                    <h3 className="text-xs uppercase tracking-widest text-amber-400">
+                      Unallocated Funds
+                    </h3>
+                    <span className="ml-auto text-sm font-semibold text-amber-300">
+                      ${totalUnallocated.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {deposits.map((dep) => {
+                      const isEditing = allocDepositId === dep.id;
+                      const justDone = allocSuccess === dep.id;
+                      return (
+                        <div key={dep.id} className={`p-3 rounded-xl border transition-colors ${justDone ? "bg-green-500/10 border-green-500/30" : "bg-surface/40 border-white/5"}`}>
+                          {/* deposit summary row */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">
+                                ${dep.amountCAD.toFixed(2)} CAD
+                                {dep.amountUSD ? ` / $${dep.amountUSD.toFixed(2)} USD` : ""}
+                              </p>
+                              <p className="text-[10px] text-muted truncate">
+                                {dep.note || "Deposit"} · {new Date(dep.pushedAt || dep.date).toLocaleDateString()}
+                              </p>
+                            </div>
+                            {!isEditing && (
+                              <motion.button whileTap={{ scale: 0.9 }} onClick={() => startAllocDeposit(dep.id, dep.amountCAD)}
+                                className="shrink-0 ml-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-400/15 text-amber-300 text-xs font-medium hover:bg-amber-400/25 transition-colors">
+                                <ArrowRight className="w-3 h-3" /> Allocate
+                              </motion.button>
+                            )}
+                          </div>
+
+                          {/* inline allocation editor */}
+                          {isEditing && (
+                            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} className="mt-3 space-y-2 overflow-hidden">
+                              {/* target type tabs */}
+                              <div className="flex gap-1 p-1 rounded-lg bg-background/60">
+                                {([
+                                  { key: "goal" as AllocTarget, icon: Target, label: "Goal" },
+                                  { key: "expense" as AllocTarget, icon: Receipt, label: "Expense" },
+                                  { key: "bill" as AllocTarget, icon: CreditCard, label: "Bill" },
+                                ]).map(({ key, icon: Icon, label }) => (
+                                  <button key={key} onClick={() => setAllocTarget(key)}
+                                    className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded-md text-[11px] font-medium transition-colors ${allocTarget === key ? "bg-accent/20 text-accent" : "text-muted hover:text-foreground"}`}>
+                                    <Icon className="w-3 h-3" /> {label}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {/* goal selector */}
+                              {allocTarget === "goal" && (
+                                <select value={allocGoalId} onChange={(e) => setAllocGoalId(e.target.value)}
+                                  className="w-full bg-background/60 rounded-lg px-3 py-2 text-xs text-foreground outline-none border border-white/5 focus:border-accent/40 transition-colors">
+                                  {goalOptions.map((o) => (
+                                    <option key={o.id} value={o.id}>
+                                      {o.label}{o.remaining > 0 ? ` ($${o.remaining.toLocaleString()} left)` : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+
+                              {/* expense title */}
+                              {allocTarget === "expense" && (
+                                <input type="text" placeholder="Expense title" value={allocExpenseTitle} onChange={(e) => setAllocExpenseTitle(e.target.value)}
+                                  className="w-full bg-background/60 rounded-lg px-3 py-2 text-xs text-foreground placeholder:text-muted outline-none border border-white/5 focus:border-accent/40 transition-colors" />
+                              )}
+
+                              {/* bill selector */}
+                              {allocTarget === "bill" && (
+                                <select value={allocBillId} onChange={(e) => setAllocBillId(e.target.value)}
+                                  className="w-full bg-background/60 rounded-lg px-3 py-2 text-xs text-foreground outline-none border border-white/5 focus:border-accent/40 transition-colors">
+                                  <option value="">Select a bill…</option>
+                                  {unpaidBills.map((b) => (
+                                    <option key={b.id} value={b.id}>{b.name} — ${b.amount.toFixed(2)}</option>
+                                  ))}
+                                  {unpaidBills.length === 0 && <option disabled>No unpaid bills</option>}
+                                </select>
+                              )}
+
+                              {/* amount + action */}
+                              <div className="flex gap-2">
+                                <div className="relative flex-1">
+                                  <DollarSign className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted" />
+                                  <input type="number" inputMode="decimal" value={allocAmount} onChange={(e) => setAllocAmount(e.target.value)}
+                                    className="w-full bg-background/60 rounded-lg pl-7 pr-3 py-2 text-xs text-foreground outline-none border border-white/5 focus:border-accent/40 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+                                </div>
+                                <motion.button whileTap={{ scale: 0.92 }} onClick={confirmAllocation}
+                                  className="px-4 py-2 rounded-lg bg-accent/20 text-accent text-xs font-medium hover:bg-accent/30 transition-colors">
+                                  Confirm
+                                </motion.button>
+                                <button onClick={() => setAllocDepositId("")}
+                                  className="px-2 py-2 rounded-lg text-muted hover:text-foreground text-xs transition-colors">
+                                  Cancel
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* leave unallocated note */}
+                  <p className="text-[10px] text-muted mt-2 text-center opacity-60">
+                    Unallocated funds stay in memory until you allocate them.
+                  </p>
+                </section>
+              )}
+
               {/* ─── Add Goal Form ──────────────────────────────── */}
               <section className="mb-8">
                 <h3 className="text-xs uppercase tracking-widest text-muted mb-3">Add Goal</h3>
