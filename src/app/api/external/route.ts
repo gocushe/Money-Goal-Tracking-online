@@ -37,7 +37,7 @@ import { getRedisClient } from "@/lib/redis";
 
 /* ── Server-side queue (file-based, works without Redis) ───────── */
 
-const QUEUE_DIR = path.join(process.cwd(), ".external-queue");
+const TMP_QUEUE_DIR = path.join("/tmp", ".external-queue");
 const REDIS_INBOX_PREFIX = "money-goals:inbox";
 
 function redisKey(letter: string, code: string) {
@@ -46,14 +46,14 @@ function redisKey(letter: string, code: string) {
 
 async function ensureQueueDir() {
   try {
-    await fs.mkdir(QUEUE_DIR, { recursive: true });
+    await fs.mkdir(TMP_QUEUE_DIR, { recursive: true });
   } catch {
     // already exists
   }
 }
 
 function queueFile(letter: string, code: string) {
-  return path.join(QUEUE_DIR, `${letter}-${code}.json`);
+  return path.join(TMP_QUEUE_DIR, `${letter}-${code}.json`);
 }
 
 interface QueuedDeposit {
@@ -68,6 +68,7 @@ interface QueuedDeposit {
 
 async function readQueue(letter: string, code: string): Promise<QueuedDeposit[]> {
   try {
+    await ensureQueueDir();
     const data = await fs.readFile(queueFile(letter, code), "utf-8");
     return JSON.parse(data);
   } catch {
@@ -89,64 +90,81 @@ async function getRedisSafe() {
   }
 }
 
-/* ── Account sync storage (file-based, alongside queue) ────────── */
+/* ── Sync data storage (Redis primary, /tmp fallback) ──────────── */
 
-const ACCOUNTS_FILE_PREFIX = "accounts-sync";
-const FULL_SYNC_PREFIX = "full-sync";
-const WEBSITE_SYNC_PREFIX = "website-sync";
+const SYNC_KEY_PREFIX = "money-goals:sync";
 
-function accountsFile(letter: string, code: string) {
-  return path.join(QUEUE_DIR, `${ACCOUNTS_FILE_PREFIX}-${letter}-${code}.json`);
+function syncRedisKey(type: string, letter: string, code: string) {
+  return `${SYNC_KEY_PREFIX}:${type}:${letter}-${code}`;
 }
 
-function fullSyncFile(letter: string, code: string) {
-  return path.join(QUEUE_DIR, `${FULL_SYNC_PREFIX}-${letter}-${code}.json`);
+function syncTmpFile(type: string, letter: string, code: string) {
+  return path.join(TMP_QUEUE_DIR, `${type}-${letter}-${code}.json`);
 }
 
-function websiteSyncFile(letter: string, code: string) {
-  return path.join(QUEUE_DIR, `${WEBSITE_SYNC_PREFIX}-${letter}-${code}.json`);
+async function readSyncData(type: string, letter: string, code: string) {
+  // Try Redis first
+  const redis = await getRedisSafe();
+  if (redis) {
+    try {
+      const raw = await redis.get(syncRedisKey(type, letter, code));
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // fall through to file
+    }
+  }
+  // Fallback to /tmp file
+  try {
+    const data = await fs.readFile(syncTmpFile(type, letter, code), "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function writeSyncData(type: string, letter: string, code: string, data: unknown) {
+  const json = JSON.stringify(data);
+  // Write to Redis (primary)
+  const redis = await getRedisSafe();
+  if (redis) {
+    try {
+      // Store with 7-day TTL so old data auto-cleans
+      await redis.set(syncRedisKey(type, letter, code), json, { EX: 604800 });
+    } catch {
+      // fall through to file
+    }
+  }
+  // Also write to /tmp as fallback
+  try {
+    await ensureQueueDir();
+    await fs.writeFile(syncTmpFile(type, letter, code), json);
+  } catch {
+    // ignore – Redis is the primary store
+  }
 }
 
 async function readAccountSync(letter: string, code: string) {
-  try {
-    const data = await fs.readFile(accountsFile(letter, code), "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
+  return readSyncData("accounts", letter, code);
 }
 
 async function writeAccountSync(letter: string, code: string, data: unknown) {
-  await ensureQueueDir();
-  await fs.writeFile(accountsFile(letter, code), JSON.stringify(data, null, 2));
+  return writeSyncData("accounts", letter, code, data);
 }
 
 async function readFullSync(letter: string, code: string) {
-  try {
-    const data = await fs.readFile(fullSyncFile(letter, code), "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
+  return readSyncData("full-sync", letter, code);
 }
 
 async function writeFullSync(letter: string, code: string, data: unknown) {
-  await ensureQueueDir();
-  await fs.writeFile(fullSyncFile(letter, code), JSON.stringify(data, null, 2));
+  return writeSyncData("full-sync", letter, code, data);
 }
 
 async function readWebsiteSync(letter: string, code: string) {
-  try {
-    const data = await fs.readFile(websiteSyncFile(letter, code), "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
+  return readSyncData("website-sync", letter, code);
 }
 
 async function writeWebsiteSync(letter: string, code: string, data: unknown) {
-  await ensureQueueDir();
-  await fs.writeFile(websiteSyncFile(letter, code), JSON.stringify(data, null, 2));
+  return writeSyncData("website-sync", letter, code, data);
 }
 
 /* ── POST: receive data from an external app ───────────────────── */
