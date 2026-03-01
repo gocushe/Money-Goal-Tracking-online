@@ -13,6 +13,7 @@ import { Target, Receipt } from "lucide-react";
 import MainView from "@/components/MainView";
 import ExpensesView from "@/components/ExpensesView";
 import { AuthSession } from "@/lib/types";
+import { useExternalSync } from "@/lib/useExternalSync";
 
 const TABS = [
   { id: "goals", label: "Goals", icon: Target },
@@ -28,6 +29,9 @@ interface AppShellProps {
 
 export default function AppShell({ session, onLogout }: AppShellProps) {
   const [activeTab, setActiveTab] = useState<TabId>("goals");
+
+  // External sync runs at the shell level so it stays active regardless of tab
+  useExternalSync(session);
 
   return (
     <motion.div

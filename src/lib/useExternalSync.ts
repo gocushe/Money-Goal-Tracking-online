@@ -30,11 +30,10 @@ import {
   AuthSession,
   AccountSyncData,
   SpendingEntry,
-  Bill,
   BillFrequency,
 } from "@/lib/types";
 
-const POLL_INTERVAL = 30_000; // 30 seconds
+const POLL_INTERVAL = 15_000; // 15 seconds
 
 interface QueuedDeposit {
   id: string;
@@ -81,6 +80,10 @@ export function useExternalSync(session: AuthSession) {
   const billsRef = useRef(bills);
   const billPaymentsRef = useRef(billPayments);
   const goalsRef = useRef(goals);
+
+  // Track previous data hashes to detect website-side changes
+  const prevSpendingHashRef = useRef("");
+  const prevBillsHashRef = useRef("");
 
   useEffect(() => { addDepositRef.current = addDeposit; }, [addDeposit]);
   useEffect(() => { setAccountSyncRef.current = setAccountSync; }, [setAccountSync]);
@@ -222,7 +225,7 @@ export function useExternalSync(session: AuthSession) {
     };
 
     // Initial poll after a short delay
-    const initialTimeout = setTimeout(poll, 3000);
+    const initialTimeout = setTimeout(poll, 2000);
     timer = setInterval(poll, POLL_INTERVAL);
 
     return () => {
@@ -230,4 +233,21 @@ export function useExternalSync(session: AuthSession) {
       clearInterval(timer);
     };
   }, [session.letter, session.code, processDeposits, mergeAppExpenses, mergeAppBills, pushWebsiteData]);
+
+  // Auto-push website data when spending or bills change locally
+  useEffect(() => {
+    const hash = JSON.stringify(spendingEntries.map((e) => e.id + e.amount));
+    if (prevSpendingHashRef.current && prevSpendingHashRef.current !== hash) {
+      pushWebsiteData();
+    }
+    prevSpendingHashRef.current = hash;
+  }, [spendingEntries, pushWebsiteData]);
+
+  useEffect(() => {
+    const hash = JSON.stringify(bills.map((b) => b.id + b.amount + b.isPaid));
+    if (prevBillsHashRef.current && prevBillsHashRef.current !== hash) {
+      pushWebsiteData();
+    }
+    prevBillsHashRef.current = hash;
+  }, [bills, pushWebsiteData]);
 }

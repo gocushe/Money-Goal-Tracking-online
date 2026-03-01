@@ -14,7 +14,6 @@ import GoalNode from "@/components/GoalNode";
 import SideGoalNode from "@/components/SideGoalNode";
 import SettingsView from "@/components/SettingsView";
 import { AuthSession, Goal } from "@/lib/types";
-import { useExternalSync } from "@/lib/useExternalSync";
 
 /* ── Constants ─────────────────────────────────────────────────── */
 const NODE_GAP = 20;
@@ -32,9 +31,6 @@ interface MainViewProps {
 export default function MainView({ session, onLogout }: MainViewProps) {
   const { goals, totalSaved, addSideGoal, addFundsToGoal } = useGoals();
   const { deposits, totalUnallocated, allocateDeposit } = useUnallocatedFunds();
-
-  // Poll for external data (daytrading app payout allocations)
-  useExternalSync(session);
 
   const [highlightedGoals, setHighlightedGoals] = useState<Set<string>>(new Set());
   const [settingsOpen, setSettingsOpen] = useState(false);
