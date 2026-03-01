@@ -30,8 +30,8 @@ import {
   Clock,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { useSpending, useBills, useGoals, useAccountSync } from "@/lib/store";
-import { BillFrequency, Bill, SyncedFinancialAccount } from "@/lib/types";
+import { useSpending, useBills, useGoals, useAccountSync, useCategories } from "@/lib/store";
+import { BillFrequency, Bill, SyncedFinancialAccount, SyncedCategory } from "@/lib/types";
 
 /* ── Constants ─────────────────────────────────────────────────── */
 
@@ -70,6 +70,14 @@ export default function ExpensesView() {
   const { bills, billPayments, addBill, removeBill, togglePaid } = useBills();
   const { goalDeposits } = useGoals();
   const { accountSync, lastSyncedAt } = useAccountSync();
+  const { categories: syncedCategories } = useCategories();
+
+  /** Find emoji & color for a category name from synced categories */
+  const getCategoryInfo = useCallback((catName: string): { emoji: string; color: string } => {
+    if (!catName) return { emoji: "", color: "" };
+    const found = syncedCategories.find((c) => c.name === catName);
+    return found ? { emoji: found.emoji, color: found.color } : { emoji: "", color: "" };
+  }, [syncedCategories]);
 
   const [section, setSection] = useState<Section>("discretionary");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("month");
@@ -78,6 +86,7 @@ export default function ExpensesView() {
   const [showSpendForm, setShowSpendForm] = useState(false);
   const [spendTitle, setSpendTitle] = useState("");
   const [spendAmount, setSpendAmount] = useState("");
+  const [spendCategory, setSpendCategory] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   /* ── Bills form state ────────────────────────────────────────── */
@@ -87,6 +96,15 @@ export default function ExpensesView() {
   const [billDueDay, setBillDueDay] = useState("");
   const [billFrequency, setBillFrequency] = useState<BillFrequency>("monthly");
   const [billCategory, setBillCategory] = useState("Utilities");
+  const [billChargeToAccountId, setBillChargeToAccountId] = useState("");
+
+  /* ── Credit card accounts for bill charge dropdown ──────────── */
+  const creditAccounts = useMemo(() => {
+    if (!accountSync) return [];
+    return accountSync.financialAccounts.filter(
+      (a) => a.type.toLowerCase() === "credit" || a.type.toLowerCase() === "credit card"
+    );
+  }, [accountSync]);
 
   /* ── Auto-suggest from past titles ──────────────────────────── */
   const pastTitles = useMemo(() => {
@@ -202,11 +220,13 @@ export default function ExpensesView() {
       title: spendTitle.trim(),
       amount: amt,
       date: new Date().toISOString(),
+      category: spendCategory || undefined,
     });
     setSpendTitle("");
     setSpendAmount("");
+    setSpendCategory("");
     setShowSpendForm(false);
-  }, [spendTitle, spendAmount, addEntry]);
+  }, [spendTitle, spendAmount, spendCategory, addEntry]);
 
   const handleAddBill = useCallback(() => {
     const amt = parseFloat(billAmount);
@@ -219,12 +239,14 @@ export default function ExpensesView() {
       frequency: billFrequency,
       category: billCategory,
       isPaid: false,
+      chargeToAccountId: billChargeToAccountId || undefined,
     });
     setBillName("");
     setBillAmount("");
     setBillDueDay("");
+    setBillChargeToAccountId("");
     setShowBillForm(false);
-  }, [billName, billAmount, billDueDay, billFrequency, billCategory, addBill]);
+  }, [billName, billAmount, billDueDay, billFrequency, billCategory, billChargeToAccountId, addBill]);
 
   return (
     <div className="px-4 pb-28">
@@ -407,9 +429,24 @@ export default function ExpensesView() {
                   <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: "#38bdf8" }} />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm truncate">{entry.title}</p>
-                    <p className="text-[10px] text-muted">
-                      {new Date(entry.date).toLocaleDateString()}
-                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-[10px] text-muted">
+                        {new Date(entry.date).toLocaleDateString()}
+                      </p>
+                      {entry.category && (
+                        <span
+                          className="text-[9px] px-1.5 py-0.5 rounded-full"
+                          style={{
+                            backgroundColor: getCategoryInfo(entry.category).color
+                              ? getCategoryInfo(entry.category).color + "20"
+                              : "rgba(255,255,255,0.05)",
+                            color: getCategoryInfo(entry.category).color || "var(--text-muted)",
+                          }}
+                        >
+                          {getCategoryInfo(entry.category).emoji} {entry.category}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <span className="text-sm font-mono" style={{ color: "#38bdf8" }}>
                     -${entry.amount.toFixed(2)}
@@ -519,6 +556,14 @@ export default function ExpensesView() {
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface/60 text-muted">
                       {bill.category}
                     </span>
+                    {bill.chargeToAccountId && (() => {
+                      const acc = creditAccounts.find((a) => a.id === bill.chargeToAccountId);
+                      return acc ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">
+                          💳 {acc.name}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                 </div>
 
@@ -599,9 +644,6 @@ export default function ExpensesView() {
                 </p>
                 <p className="text-xs text-muted mt-1">
                   {accountSync.financialAccounts.length} account(s)
-                  {accountSync.tradingAccounts.length > 0
-                    ? ` · ${accountSync.tradingAccounts.length} trading account(s)`
-                    : ""}
                 </p>
               </motion.div>
 
@@ -612,40 +654,6 @@ export default function ExpensesView() {
                   <AccountCard key={acct.id} account={acct} />
                 ))}
               </div>
-
-              {/* Trading accounts, if any */}
-              {accountSync.tradingAccounts.length > 0 && (
-                <>
-                  <h3 className="text-xs uppercase tracking-widest text-muted mb-3">Trading Accounts</h3>
-                  <div className="space-y-2">
-                    {accountSync.tradingAccounts.map((acct) => (
-                      <motion.div
-                        key={acct.id}
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="flex items-center gap-3 bg-surface/30 rounded-xl px-4 py-3 border border-white/5"
-                      >
-                        <div
-                          className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-                          style={{ backgroundColor: "rgba(168,85,247,0.15)" }}
-                        >
-                          <Building2 className="w-4 h-4" style={{ color: "#a855f7" }} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{acct.name}</p>
-                          <p className="text-[10px] text-muted">{acct.broker}</p>
-                        </div>
-                        <span className="text-sm font-mono" style={{ color: "#a855f7" }}>
-                          ${acct.startingBalance.toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}
-                        </span>
-                      </motion.div>
-                    ))}
-                  </div>
-                </>
-              )}
             </>
           )}
         </motion.div>
@@ -719,6 +727,41 @@ export default function ExpensesView() {
                   onChange={(e) => setSpendAmount(e.target.value)}
                   className="w-full bg-background/60 rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted outline-none border border-white/5 focus:border-sky-400/40 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
+
+                {/* Category selector (from synced categories) */}
+                {syncedCategories.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      onClick={() => setSpendCategory("")}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                        !spendCategory
+                          ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
+                          : "bg-surface/60 text-muted hover:text-foreground border border-transparent"
+                      }`}
+                    >
+                      None
+                    </button>
+                    {syncedCategories.map((cat) => (
+                      <button
+                        key={cat.name}
+                        onClick={() => setSpendCategory(cat.name)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                          spendCategory === cat.name
+                            ? "border"
+                            : "bg-surface/60 text-muted hover:text-foreground border border-transparent"
+                        }`}
+                        style={
+                          spendCategory === cat.name
+                            ? { backgroundColor: cat.color + "20", color: cat.color, borderColor: cat.color + "50" }
+                            : undefined
+                        }
+                      >
+                        {cat.emoji} {cat.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <motion.button
                   whileTap={{ scale: 0.95 }}
                   onClick={handleAddSpending}
@@ -823,6 +866,38 @@ export default function ExpensesView() {
                     </button>
                   ))}
                 </div>
+
+                {/* Charge to credit card */}
+                {creditAccounts.length > 0 && (
+                  <div>
+                    <p className="text-[11px] text-muted mb-1.5">Charge to credit card</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        onClick={() => setBillChargeToAccountId("")}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors ${
+                          !billChargeToAccountId
+                            ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                            : "bg-surface/60 text-muted hover:text-foreground border border-transparent"
+                        }`}
+                      >
+                        None
+                      </button>
+                      {creditAccounts.map((acc) => (
+                        <button
+                          key={acc.id}
+                          onClick={() => setBillChargeToAccountId(acc.id)}
+                          className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors ${
+                            billChargeToAccountId === acc.id
+                              ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                              : "bg-surface/60 text-muted hover:text-foreground border border-transparent"
+                          }`}
+                        >
+                          💳 {acc.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <motion.button
                   whileTap={{ scale: 0.95 }}

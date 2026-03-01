@@ -41,6 +41,7 @@ export interface SpendingEntry {
   title: string;
   amount: number;
   date: string;
+  category?: string;
 }
 
 /* ── Bills ────────────────────────────────────────────────────── */
@@ -55,6 +56,7 @@ export interface Bill {
   category: string;
   isPaid: boolean;
   lastPaidDate?: string;
+  chargeToAccountId?: string;
 }
 
 export interface BillPayment {
@@ -62,6 +64,7 @@ export interface BillPayment {
   billName: string;
   amount: number;
   date: string;
+  chargeToAccountId?: string;
 }
 
 /* ── Unallocated Deposits (from Trading Journal) ──────────────── */
@@ -125,6 +128,8 @@ export interface SyncedFinancialAccount {
   name: string;
   type: string;
   balance: number;
+  startingBalance?: number;
+  totalTransferred?: number;
   transfers?: { id: string; accountId: string; amount: number; date: string; note?: string }[];
 }
 
@@ -147,4 +152,16 @@ export interface AccountSyncContextValue {
   accountSync: AccountSyncData | null;
   setAccountSync: (data: AccountSyncData | null) => void;
   lastSyncedAt: string | null;
+}
+
+/* ── Synced Categories (from Trading Journal) ─────────────────── */
+export interface SyncedCategory {
+  name: string;
+  emoji: string;
+  color: string;
+}
+
+export interface CategoriesContextValue {
+  categories: SyncedCategory[];
+  setCategories: (cats: SyncedCategory[]) => void;
 }

@@ -25,12 +25,14 @@ import {
   useSpending,
   useBills,
   useGoals,
+  useCategories,
 } from "@/lib/store";
 import {
   AuthSession,
   AccountSyncData,
   SpendingEntry,
   BillFrequency,
+  SyncedCategory,
 } from "@/lib/types";
 
 const POLL_INTERVAL = 15_000; // 15 seconds
@@ -60,6 +62,7 @@ interface AppRecurring {
   frequency: string;
   dueDay: number;
   category?: string;
+  chargeToAccountId?: string | null;
   active?: boolean;
 }
 
@@ -69,11 +72,13 @@ export function useExternalSync(session: AuthSession) {
   const { entries: spendingEntries, setEntries: setSpendingEntries } = useSpending();
   const { bills, billPayments, setBills, setBillPayments } = useBills();
   const { goals } = useGoals();
+  const { setCategories } = useCategories();
 
   const addDepositRef = useRef(addDeposit);
   const setAccountSyncRef = useRef(setAccountSync);
   const setSpendingEntriesRef = useRef(setSpendingEntries);
   const setBillsRef = useRef(setBills);
+  const setCategoriesRef = useRef(setCategories);
 
   // Keep mutable refs for data we want to push (avoids re-triggering the poll effect)
   const spendingRef = useRef(spendingEntries);
@@ -89,6 +94,7 @@ export function useExternalSync(session: AuthSession) {
   useEffect(() => { setAccountSyncRef.current = setAccountSync; }, [setAccountSync]);
   useEffect(() => { setSpendingEntriesRef.current = setSpendingEntries; }, [setSpendingEntries]);
   useEffect(() => { setBillsRef.current = setBills; }, [setBills]);
+  useEffect(() => { setCategoriesRef.current = setCategories; }, [setCategories]);
   useEffect(() => { spendingRef.current = spendingEntries; }, [spendingEntries]);
   useEffect(() => { billsRef.current = bills; }, [bills]);
   useEffect(() => { billPaymentsRef.current = billPayments; }, [billPayments]);
@@ -107,25 +113,35 @@ export function useExternalSync(session: AuthSession) {
     }
   }, []);
 
-  /** Merge app expenses into website spending (add new, skip existing by id). */
+  /** Merge app expenses into website spending (add new, update existing by id). */
   const mergeAppExpenses = useCallback((appExpenses: AppExpense[]) => {
     if (!appExpenses || appExpenses.length === 0) return;
     const currentEntries = spendingRef.current;
-    const existingIds = new Set(currentEntries.map((e) => e.id));
-    const newEntries: SpendingEntry[] = [];
+    const entryMap = new Map(currentEntries.map((e) => [e.id, e]));
+    let changed = false;
+
     for (const ae of appExpenses) {
       const syncId = `app-${ae.id}`;
-      if (!existingIds.has(syncId)) {
-        newEntries.push({
+      if (!entryMap.has(syncId)) {
+        entryMap.set(syncId, {
           id: syncId,
           title: ae.title || "Untitled",
           amount: ae.amount,
           date: ae.date,
+          category: ae.category || undefined,
         });
+        changed = true;
+      } else {
+        // Update if amount, title, or category changed
+        const existing = entryMap.get(syncId)!;
+        if (existing.amount !== ae.amount || existing.title !== (ae.title || "Untitled") || existing.category !== (ae.category || undefined)) {
+          entryMap.set(syncId, { ...existing, title: ae.title || "Untitled", amount: ae.amount, category: ae.category || undefined });
+          changed = true;
+        }
       }
     }
-    if (newEntries.length > 0) {
-      setSpendingEntriesRef.current([...currentEntries, ...newEntries]);
+    if (changed) {
+      setSpendingEntriesRef.current(Array.from(entryMap.values()));
     }
   }, []);
 
@@ -148,14 +164,15 @@ export function useExternalSync(session: AuthSession) {
           dueDay: ar.dueDay || 1,
           frequency: freq,
           category: ar.category || "General",
+          chargeToAccountId: ar.chargeToAccountId || undefined,
           isPaid: false,
         });
         changed = true;
       } else {
-        // Update amount if changed
+        // Update amount/name/chargeToAccountId if changed
         const existing = billMap.get(syncId)!;
-        if (existing.amount !== ar.amount || existing.name !== ar.name) {
-          billMap.set(syncId, { ...existing, name: ar.name, amount: ar.amount });
+        if (existing.amount !== ar.amount || existing.name !== ar.name || existing.chargeToAccountId !== (ar.chargeToAccountId || undefined)) {
+          billMap.set(syncId, { ...existing, name: ar.name, amount: ar.amount, chargeToAccountId: ar.chargeToAccountId || undefined });
           changed = true;
         }
       }
@@ -208,13 +225,16 @@ export function useExternalSync(session: AuthSession) {
         if (data.accountSync) {
           setAccountSyncRef.current(data.accountSync as AccountSyncData);
         }
-        // Process full app data (expenses, recurring bills)
+        // Process full app data (expenses, recurring bills, categories)
         if (data.appData) {
           if (data.appData.expenses) {
             mergeAppExpenses(data.appData.expenses);
           }
           if (data.appData.recurringExpenses) {
             mergeAppBills(data.appData.recurringExpenses);
+          }
+          if (data.appData.categories && data.appData.categories.length > 0) {
+            setCategoriesRef.current(data.appData.categories as SyncedCategory[]);
           }
         }
         // Push website data back for app to pull

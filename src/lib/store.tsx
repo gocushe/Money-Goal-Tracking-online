@@ -458,6 +458,7 @@ export function BillsProvider({
               billName: b.name,
               amount: b.amount,
               date: new Date().toISOString(),
+              chargeToAccountId: b.chargeToAccountId,
             },
           ]);
         }
@@ -616,5 +617,53 @@ export function AccountSyncProvider({
 export function useAccountSync(): AccountSyncContextValue {
   const ctx = useContext(AccountSyncContext);
   if (!ctx) throw new Error("useAccountSync() must be used within an <AccountSyncProvider>");
+  return ctx;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  CATEGORIES CONTEXT (synced from Trading Journal)
+ * ═══════════════════════════════════════════════════════════════ */
+
+import type { SyncedCategory, CategoriesContextValue } from "@/lib/types";
+
+const CategoriesContext = createContext<CategoriesContextValue | null>(null);
+
+export function CategoriesProvider({ session, children }: { session: AuthSession; children: React.ReactNode }) {
+  const key = `money-goals-categories-${session.letter}-${session.code}`;
+  const [categories, setCategoriesRaw] = useState<SyncedCategory[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const isFirst = useRef(true);
+  useEffect(() => {
+    if (isFirst.current) { isFirst.current = false; return; }
+    localStorage.setItem(key, JSON.stringify(categories));
+  }, [categories, key]);
+
+  const setCategories = useCallback((cats: SyncedCategory[]) => {
+    setCategoriesRaw(cats);
+  }, []);
+
+  const value = useMemo<CategoriesContextValue>(
+    () => ({ categories, setCategories }),
+    [categories, setCategories]
+  );
+
+  return (
+    <CategoriesContext.Provider value={value}>
+      {children}
+    </CategoriesContext.Provider>
+  );
+}
+
+export function useCategories(): CategoriesContextValue {
+  const ctx = useContext(CategoriesContext);
+  if (!ctx) throw new Error("useCategories() must be used within a <CategoriesProvider>");
   return ctx;
 }
