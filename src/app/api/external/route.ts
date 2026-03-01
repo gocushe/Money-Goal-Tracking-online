@@ -92,9 +92,19 @@ async function getRedisSafe() {
 /* ── Account sync storage (file-based, alongside queue) ────────── */
 
 const ACCOUNTS_FILE_PREFIX = "accounts-sync";
+const FULL_SYNC_PREFIX = "full-sync";
+const WEBSITE_SYNC_PREFIX = "website-sync";
 
 function accountsFile(letter: string, code: string) {
   return path.join(QUEUE_DIR, `${ACCOUNTS_FILE_PREFIX}-${letter}-${code}.json`);
+}
+
+function fullSyncFile(letter: string, code: string) {
+  return path.join(QUEUE_DIR, `${FULL_SYNC_PREFIX}-${letter}-${code}.json`);
+}
+
+function websiteSyncFile(letter: string, code: string) {
+  return path.join(QUEUE_DIR, `${WEBSITE_SYNC_PREFIX}-${letter}-${code}.json`);
 }
 
 async function readAccountSync(letter: string, code: string) {
@@ -111,7 +121,35 @@ async function writeAccountSync(letter: string, code: string, data: unknown) {
   await fs.writeFile(accountsFile(letter, code), JSON.stringify(data, null, 2));
 }
 
-/* ── POST: receive a deposit from an external app ──────────────── */
+async function readFullSync(letter: string, code: string) {
+  try {
+    const data = await fs.readFile(fullSyncFile(letter, code), "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function writeFullSync(letter: string, code: string, data: unknown) {
+  await ensureQueueDir();
+  await fs.writeFile(fullSyncFile(letter, code), JSON.stringify(data, null, 2));
+}
+
+async function readWebsiteSync(letter: string, code: string) {
+  try {
+    const data = await fs.readFile(websiteSyncFile(letter, code), "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function writeWebsiteSync(letter: string, code: string, data: unknown) {
+  await ensureQueueDir();
+  await fs.writeFile(websiteSyncFile(letter, code), JSON.stringify(data, null, 2));
+}
+
+/* ── POST: receive data from an external app ───────────────────── */
 
 export async function POST(request: NextRequest) {
   try {
@@ -122,6 +160,56 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { success: false, error: "Missing letter or code" },
         { status: 400 }
+      );
+    }
+
+    /* ── Test ping (no side effects) ─────────────────────────── */
+    if (body.note === "__TEST_PING__") {
+      return NextResponse.json(
+        { success: true, message: "Connection OK" },
+        { status: 200 }
+      );
+    }
+
+    /* ── Website pushes its data for the app to pull ────────── */
+    if (body.note === "__WEBSITE_SYNC__") {
+      await writeWebsiteSync(body.letter, body.code, {
+        expenses: body.expenses || [],
+        bills: body.bills || [],
+        billPayments: body.billPayments || [],
+        goals: body.goals || [],
+        syncedAt: new Date().toISOString(),
+      });
+      return NextResponse.json(
+        { success: true, message: "Website data saved for app sync" },
+        { status: 200 }
+      );
+    }
+
+    /* ── Full bidirectional sync ─────────────────────────────── */
+    if (body.note === "__FULL_SYNC__") {
+      // Store app data for the website to pick up
+      if (body.accountSync) {
+        await writeAccountSync(body.letter, body.code, body.accountSync);
+      }
+      if (body.appData) {
+        await writeFullSync(body.letter, body.code, {
+          ...body.appData,
+          syncedAt: new Date().toISOString(),
+        });
+      }
+
+      // Read website data for the app to pull
+      const websiteData = await readWebsiteSync(body.letter, body.code);
+
+      return NextResponse.json(
+        {
+          success: true,
+          synced: true,
+          websiteData: websiteData || null,
+          message: "Full sync complete",
+        },
+        { status: 200 }
       );
     }
 
@@ -224,8 +312,9 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    /* Also fetch synced account data (non-destructive — we read but don't clear) */
+    /* Also fetch synced account data and full app sync (non-destructive reads) */
     const accountData = await readAccountSync(letter, code);
+    const fullSyncData = await readFullSync(letter, code);
 
     return NextResponse.json(
       {
@@ -233,6 +322,7 @@ export async function GET(request: NextRequest) {
         deposits: queue,
         count: queue.length,
         accountSync: accountData || null,
+        appData: fullSyncData || null,
       },
       { status: 200 }
     );

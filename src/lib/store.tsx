@@ -377,8 +377,8 @@ export function SpendingProvider({
   }, []);
 
   const value = useMemo<SpendingContextValue>(
-    () => ({ entries, addEntry, removeEntry }),
-    [entries, addEntry, removeEntry]
+    () => ({ entries, addEntry, removeEntry, setEntries }),
+    [entries, addEntry, removeEntry, setEntries]
   );
 
   return <SpendingContext.Provider value={value}>{children}</SpendingContext.Provider>;
@@ -471,8 +471,8 @@ export function BillsProvider({
   }, []);
 
   const value = useMemo<BillsContextValue>(
-    () => ({ bills, billPayments, addBill, removeBill, togglePaid }),
-    [bills, billPayments, addBill, removeBill, togglePaid]
+    () => ({ bills, billPayments, addBill, removeBill, togglePaid, setBills, setBillPayments }),
+    [bills, billPayments, addBill, removeBill, togglePaid, setBills, setBillPayments]
   );
 
   return <BillsContext.Provider value={value}>{children}</BillsContext.Provider>;

@@ -104,6 +104,7 @@ export interface SpendingContextValue {
   entries: SpendingEntry[];
   addEntry: (entry: Omit<SpendingEntry, "id">) => void;
   removeEntry: (id: string) => void;
+  setEntries: (entries: SpendingEntry[]) => void;
 }
 
 export interface BillsContextValue {
@@ -112,6 +113,8 @@ export interface BillsContextValue {
   addBill: (bill: Omit<Bill, "id">) => void;
   removeBill: (id: string) => void;
   togglePaid: (id: string) => void;
+  setBills: (bills: Bill[]) => void;
+  setBillPayments: (payments: BillPayment[]) => void;
 }
 
 /* ── Synced Accounts (from Trading Journal) ───────────────────── */

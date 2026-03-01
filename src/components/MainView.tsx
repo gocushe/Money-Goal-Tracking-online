@@ -9,10 +9,9 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu, Wallet, Plus, X, DollarSign } from "lucide-react";
-import { useGoals } from "@/lib/store";
+import { useGoals, useUnallocatedFunds } from "@/lib/store";
 import GoalNode from "@/components/GoalNode";
 import SideGoalNode from "@/components/SideGoalNode";
-import AddFunds from "@/components/AddFunds";
 import FundingInbox from "@/components/FundingInbox";
 import SettingsView from "@/components/SettingsView";
 import { AuthSession, Goal } from "@/lib/types";
@@ -32,7 +31,8 @@ interface MainViewProps {
 }
 
 export default function MainView({ session, onLogout }: MainViewProps) {
-  const { goals, totalSaved, addSideGoal } = useGoals();
+  const { goals, totalSaved, addSideGoal, addFundsToGoal } = useGoals();
+  const { deposits, totalUnallocated, allocateDeposit } = useUnallocatedFunds();
 
   // Poll for external data (daytrading app payout allocations)
   useExternalSync(session);
@@ -47,11 +47,16 @@ export default function MainView({ session, onLogout }: MainViewProps) {
   const [sgTitle, setSgTitle] = useState("");
   const [sgAmount, setSgAmount] = useState("");
 
+  /* Tap-to-fund modal */
+  const [fundGoalModal, setFundGoalModal] = useState<{ goalId: string; goalTitle: string; remaining: number } | null>(null);
+  const [fundAmount, setFundAmount] = useState("");
+
   const sortedGoals = useMemo(
     () => [...goals].sort((a, b) => a.orderIndex - b.orderIndex),
     [goals]
   );
 
+  const handleFundsAdded = useCallback(
   const handleFundsAdded = useCallback(
     (_amount: number, allocation: Record<string, number>) => {
       const fundedIds = new Set(Object.keys(allocation));
@@ -99,6 +104,45 @@ export default function MainView({ session, onLogout }: MainViewProps) {
     setSgTitle("");
     setSgAmount("");
   }, [sgTitle, sgAmount, sideGoalModal, addSideGoal]);
+
+  /** Open tap-to-fund modal when user taps a goal circle. */
+  const handleGoalTap = useCallback(
+    (goal: Goal) => {
+      const remaining = goal.targetAmount - goal.currentAmount;
+      if (remaining <= 0) return; // already fully funded
+      setFundGoalModal({ goalId: goal.id, goalTitle: goal.title, remaining });
+      setFundAmount("");
+    },
+    []
+  );
+
+  /** Allocate funds from unallocated deposits to a specific goal. */
+  const handleConfirmFund = useCallback(() => {
+    if (!fundGoalModal) return;
+    const amt = parseFloat(fundAmount);
+    if (!amt || amt <= 0) return;
+    const maxAllowed = Math.min(amt, totalUnallocated, fundGoalModal.remaining);
+    if (maxAllowed <= 0) return;
+
+    // Deduct from unallocated deposits (FIFO)
+    let remaining = maxAllowed;
+    for (const dep of deposits) {
+      if (remaining <= 0) break;
+      const take = Math.min(remaining, dep.amountCAD);
+      allocateDeposit(dep.id, take);
+      remaining -= take;
+    }
+
+    // Add to goal
+    addFundsToGoal(fundGoalModal.goalId, maxAllowed);
+
+    // Highlight
+    setHighlightedGoals(new Set([fundGoalModal.goalId]));
+    setTimeout(() => setHighlightedGoals(new Set()), HIGHLIGHT_DURATION);
+
+    setFundGoalModal(null);
+    setFundAmount("");
+  }, [fundGoalModal, fundAmount, totalUnallocated, deposits, allocateDeposit, addFundsToGoal]);
 
   return (
     <>
@@ -166,7 +210,7 @@ export default function MainView({ session, onLogout }: MainViewProps) {
 
                   {/* Main goal circle */}
                   <div className="relative">
-                    <GoalNode goal={goal} index={index} highlight={highlightedGoals.has(goal.id)} />
+                    <GoalNode goal={goal} index={index} highlight={highlightedGoals.has(goal.id)} onClick={() => handleGoalTap(goal)} />
                     {/* Add side goal button */}
                     <motion.button
                       whileTap={{ scale: 0.85 }}
@@ -200,9 +244,6 @@ export default function MainView({ session, onLogout }: MainViewProps) {
           )}
         </div>
       </div>
-
-      {/* ── Add Funds bar ───────────────────────────────────── */}
-      <AddFunds onAdd={handleFundsAdded} />
 
       {/* ── Settings panel ──────────────────────────────────── */}
       <SettingsView
@@ -262,6 +303,69 @@ export default function MainView({ session, onLogout }: MainViewProps) {
                   Add Side Goal
                 </motion.button>
               </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* ── Tap-to-Fund Modal ───────────────────────────────── */}
+      <AnimatePresence>
+        {fundGoalModal && (
+          <>
+            <motion.div
+              key="fund-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setFundGoalModal(null)}
+              className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              key="fund-modal"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="fixed inset-x-4 top-1/3 z-50 max-w-sm mx-auto bg-surface rounded-2xl p-5 border border-purple-500/20"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-accent">
+                  Fund: {fundGoalModal.goalTitle}
+                </h3>
+                <button onClick={() => setFundGoalModal(null)} className="text-muted hover:text-foreground">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="mb-3 text-[12px] text-muted space-y-1">
+                <p>Available (unallocated): <span className="text-accent font-mono">${totalUnallocated.toFixed(2)}</span></p>
+                <p>Remaining for goal: <span className="text-foreground font-mono">${fundGoalModal.remaining.toFixed(2)}</span></p>
+              </div>
+
+              {totalUnallocated <= 0 ? (
+                <p className="text-[12px] text-red-400 mb-3">
+                  No unallocated funds available. Deposits from the Trading Journal app will appear here after syncing.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    placeholder={`Amount (max $${Math.min(totalUnallocated, fundGoalModal.remaining).toFixed(2)})`}
+                    value={fundAmount}
+                    onChange={(e) => setFundAmount(e.target.value)}
+                    className="w-full bg-background/60 rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted outline-none border border-white/5 focus:border-purple-500/40 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <motion.button
+                    whileTap={{ scale: 0.95 }}
+                    onClick={handleConfirmFund}
+                    disabled={!fundAmount || parseFloat(fundAmount) <= 0}
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-purple-500/20 text-purple-300 text-sm font-medium hover:bg-purple-500/30 transition-colors disabled:opacity-40"
+                  >
+                    <DollarSign className="w-4 h-4" />
+                    Add Funds
+                  </motion.button>
+                </div>
+              )}
             </motion.div>
           </>
         )}

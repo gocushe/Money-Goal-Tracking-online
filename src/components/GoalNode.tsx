@@ -1,5 +1,5 @@
 /**
- * GoalNode.tsx  –  Circular Goal Visualisation (2× size)
+ * GoalNode.tsx  –  Circular Goal Visualisation (reduced 20% from 2× size)
  * --------------------------------------------------------
  * Renders a single goal as an SVG circle that "fills up" radially like
  * water in a round flask.  The fill percentage is derived from
@@ -27,18 +27,19 @@ import React, { useMemo } from "react";
 import { motion } from "framer-motion";
 import { Goal } from "@/lib/types";
 
-/* ── Geometry constants (2× original) ─────────────────────────── */
+/* ── Geometry constants (2× original, then reduced 20%) ───────── */
 
 /**
  * SVG viewBox dimensions and circle metrics.
  * Original: RADIUS=52, SVG_SIZE=140, STROKE_WIDTH=5
  * Doubled:  RADIUS=104, SVG_SIZE=280, STROKE_WIDTH=8
+ * Reduced 20%: RADIUS=83, SVG_SIZE=224, STROKE_WIDTH=6
  */
-const RADIUS = 104;
+const RADIUS = 83;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-const SVG_SIZE = 280;
+const SVG_SIZE = 224;
 const CENTER = SVG_SIZE / 2;
-const STROKE_WIDTH = 8;
+const STROKE_WIDTH = 6;
 
 /* ── Component ─────────────────────────────────────────────────── */
 
@@ -48,9 +49,11 @@ interface GoalNodeProps {
   index: number;
   /** Play a glow pulse on this node (true when funds just arrived). */
   highlight?: boolean;
+  /** Tap-to-fund callback — triggered when user taps the circle. */
+  onClick?: () => void;
 }
 
-export default function GoalNode({ goal, index, highlight }: GoalNodeProps) {
+export default function GoalNode({ goal, index, highlight, onClick }: GoalNodeProps) {
   /**
    * Calculate how much of the circle border to fill.
    * `dashOffset` decreases as the goal approaches 100 %.
@@ -85,8 +88,10 @@ export default function GoalNode({ goal, index, highlight }: GoalNodeProps) {
       transition={{ delay: index * 0.12, type: "spring", stiffness: 160 }}
       className="flex flex-col items-center relative"
     >
-      {/* ── SVG ring (280 × 280) ────────────────────────────────── */}
+      {/* ── SVG ring (224 × 224) ────────────────────────────────── */}
       <div
+        onClick={onClick}
+        style={{ cursor: onClick ? "pointer" : undefined }}
         className={`relative ${highlight ? "animate-neon-pulse" : ""} ${
           isComplete ? "glow-purple-strong" : ""
         }`}
@@ -139,19 +144,19 @@ export default function GoalNode({ goal, index, highlight }: GoalNodeProps) {
 
         {/* ── Inner content (amount + title) rendered on top of SVG ── */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          {/* Target amount — 2× original (was text-base / 16px, now 2rem / 32px) */}
-          <span className="text-[2rem] font-semibold text-foreground leading-tight">
+          {/* Target amount — scaled down 20% (was 2rem, now 1.6rem) */}
+          <span className="text-[1.6rem] font-semibold text-foreground leading-tight">
             {formatAmount(goal.targetAmount)}
           </span>
 
-          {/* Goal title — 2× original (was 10px, now 20px) */}
-          <span className="text-[20px] text-muted mt-1 max-w-[180px] truncate text-center">
+          {/* Goal title — scaled down 20% (was 20px, now 16px) */}
+          <span className="text-[16px] text-muted mt-1 max-w-[144px] truncate text-center">
             {goal.title}
           </span>
 
-          {/* Progress percentage — 1.3× original (was 10px, now 13px) */}
+          {/* Progress percentage — scaled down 20% (was 13px, now 11px) */}
           <span
-            className={`text-[13px] mt-1 font-mono ${
+            className={`text-[11px] mt-1 font-mono ${
               isComplete ? "text-accent" : "text-accent-soft"
             }`}
           >
